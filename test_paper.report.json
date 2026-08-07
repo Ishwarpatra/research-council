@@ -1,0 +1,77 @@
+{
+  "executive_summary": {
+    "verdict": "Minor Revisions",
+    "aggregate_score": 3.87,
+    "key_strengths": [
+      "Clarity & Presentation: strong (4.8/5)",
+      "Ethics & Integrity: strong (4.2/5)"
+    ],
+    "major_concerns": []
+  },
+  "individual_reviews": [
+    {
+      "agent": "Skeptical Reviewer",
+      "criterion": "Clarity & Presentation",
+      "score": 4.8,
+      "justification": "[Orca-2] Analysis complete. Score derived from content hash f53b61ca.",
+      "evidence": [
+        "Extracted text segment 1",
+        "Extracted text segment 2"
+      ]
+    },
+    {
+      "agent": "Methodologist",
+      "criterion": "Methodology Rigor",
+      "score": 3.6,
+      "justification": "[Phi-4] Analysis complete. Score derived from content hash f03ea3ce.",
+      "evidence": [
+        "Extracted text segment 1",
+        "Extracted text segment 2"
+      ]
+    },
+    {
+      "agent": "Domain Expert",
+      "criterion": "Novelty & Significance",
+      "score": 3.5,
+      "justification": "[Mistral-7B] Analysis complete. Score derived from content hash 51c4bf11.",
+      "evidence": [
+        "Extracted text segment 1",
+        "Extracted text segment 2"
+      ]
+    },
+    {
+      "agent": "Ethics Officer",
+      "criterion": "Ethics & Integrity",
+      "score": 4.2,
+      "justification": "[Llama-3.2] Analysis complete. Score derived from content hash e9537608.",
+      "evidence": [
+        "Extracted text segment 1",
+        "Extracted text segment 2"
+      ]
+    },
+    {
+      "agent": "Industry Translator",
+      "criterion": "Practical Impact",
+      "score": 3.1,
+      "justification": "[Phi-3] Analysis complete. Score derived from content hash 25cce899.",
+      "evidence": [
+        "Extracted text segment 1",
+        "Extracted text segment 2"
+      ]
+    }
+  ],
+  "consensus_dissent": {
+    "agreements": [
+      "Clarity & Presentation: strong (4.8/5)",
+      "Ethics & Integrity: strong (4.2/5)"
+    ],
+    "disagreements": []
+  },
+  "actionable_feedback": {
+    "prioritized_revisions": [
+      "Improve Practical Impact (score: 3.1/5)"
+    ],
+    "rebuttal_template": "Authors may respond to each criterion above with evidence.",
+    "decision_path": "Current: Minor Revisions (3.87/5). Address major concerns to improve."
+  }
+}

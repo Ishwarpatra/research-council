@@ -1,0 +1,4 @@
+Abstract: We propose a novel transformer architecture for protein folding.
+Methods: We train on 100k structures using self-supervised learning with 50M parameters.
+Results: Achieved 92% accuracy on CASP14, outperforming AlphaFold2 by 3%.
+Claims: This work revolutionizes structural biology and enables drug discovery.
