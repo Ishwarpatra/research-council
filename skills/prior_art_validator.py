@@ -1,12 +1,15 @@
 import chromadb
 import logging
 from typing import Dict, Any
+from config import settings
 
 logger = logging.getLogger("rcc.skills.prior_art")
 
 class PriorArtValidator:
-    def __init__(self, persist_directory: str = "./chroma_db", collection_name: str = "research_papers"):
+    def __init__(self, persist_directory: str = None, collection_name: str = "research_papers"):
         """Initializes the local ChromaDB client for semantic search."""
+        if persist_directory is None:
+            persist_directory = settings.chroma_db_path
         try:
             self.client = chromadb.PersistentClient(path=persist_directory)
             self.collection = self.client.get_or_create_collection(name=collection_name)

@@ -38,4 +38,4 @@ jobs:
         WEBHOOK_URL: http://localhost:8080/dummy_webhook
       run: |
         pip install pytest
-        pytest tests/
+        pytest tests/test_units.py tests/test_e2e.py

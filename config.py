@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     webhook_url: str = Field(...)
     ollama_host: str = Field("http://host.docker.internal:11434")
     db_path: str = Field("council.db")
+    chroma_db_path: str = Field("chroma_db")
     fallback_provider: str = Field("stub")
 
 # Instantiate and validate configuration immediately at boot time
