@@ -3,6 +3,8 @@ import sqlite3
 import time
 from contextlib import closing
 
+import aiosqlite
+
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
     id INTEGER PRIMARY KEY,
@@ -196,3 +198,41 @@ def update_appeal_verdict(appeal_id: int, verdict: str) -> None:
             (verdict, appeal_id),
         )
         conn.commit()
+
+
+# ──────────────────────────────────────────────
+# Async WebSockets State Storage (aiosqlite)
+# ──────────────────────────────────────────────
+
+async def init_db_async(db_path: str) -> aiosqlite.Connection:
+    """Initialize schema and return a persistent, shared connection."""
+    db = await aiosqlite.connect(db_path)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS websocket_frames (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER,
+            seq_id INTEGER,
+            payload TEXT,
+            created_at REAL
+        )
+    """)
+    await db.commit()
+    return db
+
+async def log_frame(db: aiosqlite.Connection, paper_id: int, seq_id: int, payload: str):
+    import time
+    await db.execute(
+        "INSERT INTO websocket_frames (paper_id, seq_id, payload, created_at) VALUES (?, ?, ?, ?)",
+        (paper_id, seq_id, payload, time.time())
+    )
+    await db.commit()
+
+async def get_websocket_frames(db_path: str, paper_id: int, since_seq: int = 0) -> list:
+    """Fetch websocket frames since a specific sequence ID for delta replay."""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT payload FROM websocket_frames WHERE paper_id = ? AND seq_id > ? ORDER BY seq_id ASC",
+            (paper_id, since_seq)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [json.loads(r[0]) for r in rows]

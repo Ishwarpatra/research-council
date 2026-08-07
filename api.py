@@ -1,25 +1,195 @@
+import asyncio
 import json
 import logging
-import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import council
 import db
+from config import settings
 
 logger = logging.getLogger("rcc.api")
+
+# Dynamic global human-in-the-loop tracking
+active_deliberation = {
+    "status": "idle",              # idle | deliberating | waiting_for_approval | completed | aborted | failed
+    "round_num": 0,
+    "paper_path": "",
+    "reviews": [],
+    "error_message": "",
+}
+approval_event = asyncio.Event()
+abort_flag = asyncio.Event()
+
+# Active WebSocket connections list
+connected_clients = set()
+global_seq_id = 0
+
+async def broadcast_ws(payload: dict, app_db):
+    """Log to database and broadcast to all connected WebSocket clients."""
+    global global_seq_id
+    global_seq_id += 1
+    payload["seq_id"] = global_seq_id
+    payload_str = json.dumps(payload)
+
+    # 1. Non-blocking persistent database logging
+    try:
+        # Check if active paper path matches a paper in database
+        if active_deliberation["paper_path"]:
+            pid = db.get_paper_id_by_path(active_deliberation["paper_path"])
+            if pid:
+                await db.log_frame(app_db, pid, global_seq_id, payload_str)
+    except Exception as e:
+        logger.error(f"Failed to log frame: {e}")
+
+    # 2. Broadcast to clients
+    for ws in list(connected_clients):
+        try:
+            await ws.send_text(payload_str)
+        except Exception:
+            connected_clients.discard(ws)
+
+def hitl_callback(round_num: int, reviews: list) -> bool:
+    """Callback function blocking deliberation loop to await human approval."""
+    # Since council runs in a separate thread, bridge the blocking check using asyncio.run_coroutine_threadsafe
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return asyncio.run_coroutine_threadsafe(
+        async_hitl_callback(round_num, reviews),
+        loop
+    ).result()
+
+async def async_hitl_callback(round_num: int, reviews: list) -> bool:
+    global active_deliberation
+    active_deliberation["status"] = "waiting_for_approval"
+    active_deliberation["round_num"] = round_num
+    active_deliberation["reviews"] = [
+        {
+            "agent_name": r.agent_name,
+            "criterion": r.criterion,
+            "score": r.score,
+            "justification": r.justification or "",
+            "challenge_target": r.challenge_target or "",
+        } for r in reviews
+    ]
+
+    logger.info(f"Pause: Round {round_num} waiting for Human-in-the-Loop approval.")
+
+    # Broadcast state change to websockets
+    app_db = app.state.db if hasattr(app, "state") and hasattr(app.state, "db") else None
+    await broadcast_ws({
+        "type": "approval_required",
+        "round_num": round_num,
+        "reviews": active_deliberation["reviews"]
+    }, app_db)
+
+    approval_event.clear()
+    await approval_event.wait()
+
+    if abort_flag.is_set():
+        logger.warning(f"Deliberation aborted during Round {round_num}.")
+        return False
+
+    logger.info(f"Round {round_num} approved. Resuming...")
+    active_deliberation["status"] = "deliberating"
+    active_deliberation["reviews"] = []
+
+    await broadcast_ws({
+        "type": "round_approved",
+        "round_num": round_num
+    }, app_db)
+
+    return True
+
+async def background_deliberation_task(paper_path: str, app_db):
+    global active_deliberation
+    abort_flag.clear()
+    approval_event.clear()
+
+    active_deliberation["status"] = "deliberating"
+    active_deliberation["paper_path"] = paper_path
+    active_deliberation["round_num"] = 1
+    active_deliberation["reviews"] = []
+    active_deliberation["error_message"] = ""
+
+    await broadcast_ws({
+        "type": "deliberation_started",
+        "paper_path": paper_path
+    }, app_db)
+
+    try:
+        if not Path(paper_path).exists():
+            raise FileNotFoundError(f"Manuscript file not found: {paper_path}")
+
+        loop = asyncio.get_running_loop()
+        # Run synchronous engine deliberation inside a separate thread pool executor
+        report = await loop.run_in_executor(
+            None,
+            lambda: council.run_council(paper_path, hitl_hook=hitl_callback)
+        )
+        active_deliberation["status"] = "completed"
+        logger.info(f"Deliberation completed for {paper_path}.")
+        await broadcast_ws({
+            "type": "deliberation_completed",
+            "report": report
+        }, app_db)
+    except Exception as exc:
+        if abort_flag.is_set():
+            active_deliberation["status"] = "aborted"
+            logger.info("Deliberation cleanup completed after abort.")
+            await broadcast_ws({
+                "type": "deliberation_aborted"
+            }, app_db)
+        else:
+            active_deliberation["status"] = "failed"
+            active_deliberation["error_message"] = str(exc)
+            logger.error(f"Deliberation failed: {exc}", exc_info=True)
+            await broadcast_ws({
+                "type": "deliberation_failed",
+                "error": str(exc)
+            }, app_db)
+
+
+# ──────────────────────────────────────────────
+# Lifespan Context Manager
+# ──────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP PHASE ---
+    logger.info("Initializing persistent aiosqlite database connection...")
+    try:
+        # Initialize schema and get persistent database handle
+        app.state.db = await db.init_db_async(settings.db_path)
+        logger.info("Database connection successfully mounted to app.state.db.")
+    except Exception as e:
+        logger.error(f"Failed to initialize database connection: {e}")
+        raise e
+
+    yield  # Application runs while suspended here
+
+    # --- SHUTDOWN PHASE ---
+    logger.info("Closing persistent database connection...")
+    if hasattr(app.state, "db"):
+        await app.state.db.close()
+        logger.info("Database connection safely closed.")
 
 app = FastAPI(
     title="Research Consensus Council API",
     description="FastAPI service for multi-agent academic paper consensus and deliberation.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-# Enable CORS for external dashboard client integrations
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,80 +205,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={"error": exc.detail},
     )
 
-# Global Human-in-the-Loop orchestration state
-active_deliberation = {
-    "status": "idle",              # idle | deliberating | waiting_for_approval | completed | aborted | failed
-    "round_num": 0,
-    "paper_path": "",
-    "reviews": [],                 # Reviews accumulated in the current active round
-    "error_message": "",
-}
-approval_event = threading.Event()
-abort_flag = threading.Event()
-
-def hitl_callback(round_num: int, reviews: list) -> bool:
-    """
-    Callback function injected into the deliberation engine.
-    Updates the live state and blocks execution until human approval or abort is triggered from the API/UI.
-    """
-    global active_deliberation
-    active_deliberation["status"] = "waiting_for_approval"
-    active_deliberation["round_num"] = round_num
-    active_deliberation["reviews"] = [
-        {
-            "agent_name": r.agent_name,
-            "criterion": r.criterion,
-            "score": r.score,
-            "justification": r.justification or "",
-            "challenge_target": r.challenge_target or "",
-        } for r in reviews
-    ]
-
-    logger.info(f"Deliberation paused: Round {round_num} waiting for Human-in-the-Loop approval.")
-    approval_event.clear()
-    approval_event.wait()  # Block deliberation thread until approved or aborted
-
-    if abort_flag.is_set():
-        logger.warning(f"Deliberation aborted by user during Round {round_num} review.")
-        return False
-
-    logger.info(f"Round {round_num} approved by human. Resuming deliberation.")
-    active_deliberation["status"] = "deliberating"
-    active_deliberation["reviews"] = []
-    return True
-
-def background_deliberation_task(paper_path: str):
-    """Orchestrates the deliberation execution inside a background worker thread."""
-    global active_deliberation
-    abort_flag.clear()
-    approval_event.clear()
-
-    active_deliberation["status"] = "deliberating"
-    active_deliberation["paper_path"] = paper_path
-    active_deliberation["round_num"] = 1
-    active_deliberation["reviews"] = []
-    active_deliberation["error_message"] = ""
-
-    try:
-        # Check if file exists before running
-        if not Path(paper_path).exists():
-            raise FileNotFoundError(f"Manuscript file not found: {paper_path}")
-
-        # Run the full council engine, passing the callback hook
-        council.run_council(paper_path, hitl_hook=hitl_callback)
-        active_deliberation["status"] = "completed"
-        logger.info(f"Deliberation successfully completed for {paper_path}.")
-    except Exception as exc:
-        if abort_flag.is_set():
-            active_deliberation["status"] = "aborted"
-            logger.info("Deliberation cleanup completed after abort trigger.")
-        else:
-            active_deliberation["status"] = "failed"
-            active_deliberation["error_message"] = str(exc)
-            logger.error(f"Deliberation failed: {exc}", exc_info=True)
 
 # ──────────────────────────────────────────────
-# Dashboard UI
+# Web Dashboard HTML
 # ──────────────────────────────────────────────
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -151,8 +250,6 @@ header h1{font-size:1.05rem;font-weight:600;letter-spacing:-.01em}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:35vh;color:var(--muted);gap:10px;text-align:center}
 .empty .ico{font-size:2.8rem;opacity:.22}
 .empty code{background:var(--s2);padding:2px 7px;border-radius:5px;font-size:.74rem;color:#aab}
-
-/* Glassmorphism Human-in-the-loop Active panel */
 .hitl-panel{background:rgba(21,24,38,0.7);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:var(--rl);padding:20px;margin-bottom:20px;box-shadow:var(--sh)}
 .hitl-header{display:flex;align-items:center;justify-content:between;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:10px}
 .hitl-title{font-size:0.9rem;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em}
@@ -166,13 +263,10 @@ header h1{font-size:1.05rem;font-weight:600;letter-spacing:-.01em}
 .hitl-card{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:10px}
 .hitl-card-header{display:flex;justify-content:space-between;align-items:center;font-size:0.72rem;font-weight:700;color:var(--text);margin-bottom:6px}
 .hitl-card-body{font-size:0.68rem;color:var(--muted);line-height:1.4}
-
-/* Deliberation form */
 .form-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:20px}
 .form-row{display:flex;gap:10px;align-items:center}
 .form-input{flex:1;background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:8px 12px;color:var(--text);font-size:0.8rem;outline:none}
 .form-input:focus{border-color:var(--accent)}
-
 .vc{background:linear-gradient(135deg,var(--surface),var(--s2));border:1px solid var(--border);border-radius:var(--rl);padding:20px 22px;display:flex;align-items:center;gap:20px;margin-bottom:16px;box-shadow:var(--sh)}
 .sring{width:78px;height:78px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-direction:column;border:4px solid var(--border);flex-shrink:0}
 .sval{font-size:1.35rem;font-weight:700;line-height:1}
@@ -223,18 +317,13 @@ header h1{font-size:1.05rem;font-weight:600;letter-spacing:-.01em}
     </div>
   </aside>
   <main class="main" id="main-area">
-    <!-- Live Deliberation Panel -->
     <div id="hitl-panel-area"></div>
-
-    <!-- Deliberation Trigger Form -->
     <div class="form-panel">
       <div class="form-row">
         <input class="form-input" id="delib-path" type="text" placeholder="Enter path to paper (e.g. tests/fixtures/test_paper.txt)">
         <button class="btn btn-primary" onclick="startDeliberation()">Start Deliberation</button>
       </div>
     </div>
-
-    <!-- Selected Paper Content Detail Area -->
     <div id="main">
       <div class="empty">
         <div class="ico">📋</div>
@@ -381,7 +470,6 @@ async function pollHITL() {
       return;
     }
 
-    // Status is either "deliberating" or "waiting_for_approval"
     var statusText = d.status === "deliberating" ? "Engine Deliberating..." : "Human-in-the-Loop Review Required";
     var statusColor = d.status === "deliberating" ? "var(--min)" : "var(--accent)";
     var statusBg = d.status === "deliberating" ? "var(--min-bg)" : "rgba(124,111,247,0.15)";
@@ -413,7 +501,6 @@ async function pollHITL() {
       +controls
       +'</div>';
 
-    // Continue polling while active
     setTimeout(pollHITL, 1000);
   } catch(e) {}
 }
@@ -425,8 +512,9 @@ pollHITL();
 </body>
 </html>"""
 
+
 # ──────────────────────────────────────────────
-# API Handlers
+# REST Endpoints
 # ──────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -518,7 +606,6 @@ async def post_settings(request: Request):
     if not (0.999 <= w_sum <= 1.001):
         raise HTTPException(status_code=400, detail=f"Weights must sum to 1.0 (got {w_sum:.4f})")
 
-    # Persist config file
     cfg_path = Path("council_config.json")
     try:
         persisted = {}
@@ -527,7 +614,6 @@ async def post_settings(request: Request):
         persisted["weights"] = parsed_weights
         cfg_path.write_text(json.dumps(persisted, indent=2), encoding="utf-8")
 
-        # Reload configuration
         council.CFG["weights"] = parsed_weights
         council.WEIGHTS = parsed_weights
     except Exception as exc:
@@ -556,8 +642,8 @@ async def trigger_deliberation(path: str, background_tasks: BackgroundTasks):
     if not Path(decoded_path).exists():
         raise HTTPException(status_code=404, detail=f"Manuscript file not found: {decoded_path}")
 
-    # Start task in background worker thread
-    background_tasks.add_task(background_deliberation_task, decoded_path)
+    app_db = app.state.db if hasattr(app, "state") and hasattr(app.state, "db") else None
+    background_tasks.add_task(background_deliberation_task, decoded_path, app_db)
     return {"status": "started", "paper_path": decoded_path}
 
 @app.post("/api/approve_round")
@@ -574,8 +660,51 @@ async def abort_round():
     if active_deliberation["status"] not in ("deliberating", "waiting_for_approval"):
         raise HTTPException(status_code=400, detail="No active deliberation to abort.")
     abort_flag.set()
-    approval_event.set()  # Unblock thread to let it abort
+    approval_event.set()
     return {"status": "aborting"}
+
+
+# ──────────────────────────────────────────────
+# Active WebSockets & Delta Replay Routes
+# ──────────────────────────────────────────────
+
+@app.websocket("/api/ws/{paper_id}")
+async def websocket_stream(websocket: WebSocket, paper_id: int):
+    await websocket.accept()
+    connected_clients.add(websocket)
+    logger.info(f"WebSocket connected for paper_id: {paper_id}")
+    try:
+        while True:
+            # Maintain active connection listening for optional client ping messages
+            await websocket.receive_text()
+            # Ignore client pings, only check connection validity
+    except WebSocketDisconnect:
+        connected_clients.discard(websocket)
+        logger.info(f"WebSocket disconnected for paper_id: {paper_id}")
+    except Exception as e:
+        connected_clients.discard(websocket)
+        logger.error(f"WebSocket error: {e}")
+
+@app.get("/api/deliberation/{paper_id}/replay")
+async def replay_websocket_frames(paper_id: int, since_seq: int = 0):
+    """Replay sequence tracked frames for client-side offline hydration."""
+    try:
+        frames = await db.get_websocket_frames(settings.db_path, paper_id, since_seq)
+        return frames
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Replay database retrieval failed: {e}")
+
+@app.get("/api/health/circuit")
+async def get_circuit_health():
+    """Retrieve active LLM provider circuit status."""
+    state = await council.primary_breaker.get_state()
+    return {
+        "status": state,
+        "primary_failures": council.primary_breaker.failure_count,
+        "llm_provider": settings.llm_provider,
+        "fallback_provider": settings.fallback_provider
+    }
+
 
 # ──────────────────────────────────────────────
 # Runner

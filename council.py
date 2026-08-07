@@ -7,6 +7,7 @@ Research Consensus Council — Multi-agent deliberation with persistence & real 
 __version__ = "1.0.0"
 
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -21,6 +22,13 @@ from pathlib import Path
 
 # Import Decoupled Database Access Layer (separation of concerns)
 import db
+from circuit import CircuitBreaker
+
+# Import validated configurations and Circuit Breaker
+from config import settings
+
+# Initialize primary circuit breaker
+primary_breaker = CircuitBreaker(webhook_url=settings.webhook_url)
 
 # PDF extraction
 try:
@@ -42,83 +50,51 @@ logger = logging.getLogger("rcc")
 
 
 # ──────────────────────────────────────────────
-# Config
+# Config Setup (Using validated config.settings)
 # ──────────────────────────────────────────────
 
-def load_config() -> dict:
-    """Load config from environment variables + optional JSON file with validation check."""
-    cfg = {
-        "db_path":      os.getenv("RCC_DB",           "council.db"),
-        "llm_provider": os.getenv("RCC_LLM_PROVIDER", "stub"),   # stub|ollama|openai
-        "ollama_host":  os.getenv("OLLAMA_HOST",      "http://localhost:11434"),
-        "openai_key":   os.getenv("OPENAI_API_KEY",   ""),
-        "webhook_url":  os.getenv("RCC_WEBHOOK_URL",  ""),        # Fix 1: read webhook URL
-        "openai_model_map": {
-            # All five route to gpt-4o-mini on the OpenAI path (single-API convenience).
-            # Agent names still encode the intended model persona.
-            "Orca-2":     "gpt-4o-mini",
-            "Phi-4":      "gpt-4o-mini",
-            "Mistral-7B": "gpt-4o-mini",
-            "Llama-3.2":  "gpt-4o-mini",
-            "Phi-3":      "gpt-4o-mini",
-        },
-        "ollama_model_map": {
-            # Real Ollama model tags — override via council_config.json if your local names differ.
-            "Orca-2":     "orca2",
-            "Phi-4":      "phi4",
-            "Mistral-7B": "mistral",
-            "Llama-3.2":  "llama3.2",
-            "Phi-3":      "phi3",
-        },
-        "weights": {
-            "Clarity & Presentation": 0.20,
-            "Methodology Rigor":      0.25,
-            "Novelty & Significance": 0.20,
-            "Ethics & Integrity":     0.20,
-            "Practical Impact":       0.15,
-        },
-    }
-    cfg_path = Path("council_config.json")
-    if cfg_path.exists():
-        # Fix 5: guard against malformed JSON rather than hard-crashing
-        try:
-            cfg.update(json.loads(cfg_path.read_text(encoding="utf-8")))
-        except json.JSONDecodeError as exc:
-            logger.warning("council_config.json is malformed (%s). Using defaults.", exc)
+CFG = {
+    "db_path":      settings.db_path,
+    "llm_provider": settings.llm_provider,
+    "ollama_host":  settings.ollama_host,
+    "openai_key":   settings.openai_api_key,
+    "webhook_url":  settings.webhook_url,
+    "openai_model_map": {
+        "Orca-2":     "gpt-4o-mini",
+        "Phi-4":      "gpt-4o-mini",
+        "Mistral-7B": "gpt-4o-mini",
+        "Llama-3.2":  "gpt-4o-mini",
+        "Phi-3":      "gpt-4o-mini",
+    },
+    "ollama_model_map": {
+        "Orca-2":     "orca2",
+        "Phi-4":      "phi4",
+        "Mistral-7B": "mistral",
+        "Llama-3.2":  "llama3.2",
+        "Phi-3":      "phi3",
+    },
+    "weights": {
+        "Clarity & Presentation": 0.20,
+        "Methodology Rigor":      0.25,
+        "Novelty & Significance": 0.20,
+        "Ethics & Integrity":     0.20,
+        "Practical Impact":       0.15,
+    },
+}
 
-    # Configuration validation schema to capture errors before runtime
-    provider = cfg.get("llm_provider")
-    if provider not in ("stub", "ollama", "openai"):
-        raise ValueError(
-            f"Invalid RCC_LLM_PROVIDER value: '{provider}'. "
-            "Supported provider strings are: 'stub', 'ollama', 'openai'."
-        )
+# Update from optional json config if exists, without bypassing settings validation
+cfg_path = Path("council_config.json")
+if cfg_path.exists():
+    try:
+        loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if "weights" in loaded:
+            CFG["weights"].update(loaded["weights"])
+    except json.JSONDecodeError as exc:
+        logger.warning("council_config.json is malformed (%s). Using defaults.", exc)
 
-    w = cfg.get("weights", {})
-    required_keys = {
-        "Clarity & Presentation",
-        "Methodology Rigor",
-        "Novelty & Significance",
-        "Ethics & Integrity",
-        "Practical Impact"
-    }
-    if set(w.keys()) != required_keys:
-        raise ValueError(
-            f"Weights criteria keys are invalid. Required: {list(required_keys)}. Got: {list(w.keys())}"
-        )
+# Initialize dynamic DB configuration
+db.configure_db_path(CFG["db_path"])
 
-    w_sum = sum(w.values())
-    if not (0.999 <= w_sum <= 1.001):
-        raise ValueError(
-            f"Configuration weights sum must equal 1.0. Currently sums to: {w_sum:.4f}"
-        )
-
-    # Initialize dynamic DB configuration
-    db.configure_db_path(cfg["db_path"])
-    return cfg
-
-
-CFG     = load_config()
 WEIGHTS = CFG["weights"]
 
 
@@ -412,19 +388,32 @@ def extract_content(file_path: str) -> PaperContent:
 # ──────────────────────────────────────────────
 
 # Fix 8: module-level Event so backoff waits are interruptible from other threads.
+# Fix 8: module-level Event so backoff waits are interruptible from other threads.
 _retry_event = threading.Event()
 
 
-def call_llm(prompt: str, model: str) -> str:
-    """Dispatch to the configured LLM provider (ollama / openai / stub)."""
-    # Fix 12: urllib.request is already imported at module level — no redundant inner imports.
-    provider = CFG["llm_provider"]
+def _run_async(coro):
+    """Bridge synchronous deliberation calls to asynchronous circuit breaker methods safely."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
+    if loop and loop.is_running():
+        # Run inside the active Uvicorn ASGI event loop thread-safely
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+    else:
+        # Create a new local loop for this execution thread
+        return asyncio.run(coro)
+
+
+def call_llm_primary(prompt: str, model: str) -> str:
+    """Invokes primary LLM provider (openai/ollama) with strict JSON Schema formatting constraints."""
+    provider = settings.llm_provider
     if provider == "ollama":
-        # Use the dedicated Ollama map — prevents asking Ollama for "gpt-4o-mini" which doesn't exist locally
         mapped = CFG["ollama_model_map"].get(model, model)
         req = urllib.request.Request(
-            f"{CFG['ollama_host']}/api/generate",
+            f"{settings.ollama_host}/api/generate",
             data=json.dumps({"model": mapped, "prompt": prompt,
                              "stream": False, "format": "json"}).encode(),
             headers={"Content-Type": "application/json"},
@@ -432,39 +421,78 @@ def call_llm(prompt: str, model: str) -> str:
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read().decode())["response"]
 
-    if provider == "openai" and CFG["openai_key"]:
+    if provider == "openai" and settings.openai_api_key:
         mapped = CFG["openai_model_map"].get(model, "gpt-4o-mini")
         req = urllib.request.Request(
             "https://api.openai.com/v1/chat/completions",
             data=json.dumps({
                 "model":    mapped,
                 "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_object"},
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "AgentResponseSchema",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "score": {"type": "number", "minimum": 1.0, "maximum": 5.0},
+                                "justification": {"type": "string", "minLength": 10},
+                                "evidence": {"type": "array", "items": {"type": "string"}},
+                                "challenge_target": {"type": ["string", "null"]}
+                            },
+                            "required": ["score", "justification", "evidence", "challenge_target"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
                 "temperature": 0.2,
             }).encode(),
             headers={
-                "Authorization": f"Bearer {CFG['openai_key']}",
+                "Authorization": f"Bearer {settings.openai_api_key}",
                 "Content-Type":  "application/json",
             },
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read().decode())["choices"][0]["message"]["content"]
 
-    # Stub fallback — deterministic score derived from prompt hash
-    seed = hashlib.md5(prompt.encode()).hexdigest()[:8]
-    return json.dumps({
-        "score":         round(3.0 + (int(seed, 16) % 20) / 10, 1),
-        "justification": f"[{model}] Stub analysis. Score derived from content hash {seed}.",
-        "evidence":      ["Extracted text segment 1", "Extracted text segment 2"],
-    })
+    raise RuntimeError(f"Primary provider failed or is unsupported: {provider}")
+
+
+def call_llm_fallback(prompt: str, model: str) -> str:
+    """Stub fallback — deterministic score derived from prompt hash."""
+    provider = settings.fallback_provider
+    if provider == "stub":
+        seed = hashlib.md5(prompt.encode()).hexdigest()[:8]
+        return json.dumps({
+            "score":         round(3.0 + (int(seed, 16) % 20) / 10, 1),
+            "justification": f"[{model}] Stub analysis. Score derived from content hash {seed}.",
+            "evidence":      ["Extracted text segment 1", "Extracted text segment 2"],
+            "challenge_target": None
+        })
+    raise RuntimeError(f"Unsupported fallback provider: {provider}")
+
+
+def call_llm(prompt: str, model: str) -> str:
+    """Dispatch to LLM provider with fallback failover protection via CircuitBreaker state."""
+    state = _run_async(primary_breaker.get_state())
+    if state == "Open":
+        logger.warning(f"Circuit breaker is OPEN. Automatically failing over to fallback: {settings.fallback_provider}")
+        return call_llm_fallback(prompt, model)
+
+    try:
+        res = call_llm_primary(prompt, model)
+        _run_async(primary_breaker.record_success())
+        return res
+    except Exception as exc:
+        logger.error(f"Primary LLM invocation failed: {exc}. Logging failure in breaker...")
+        _run_async(primary_breaker.record_failure())
+        logger.warning(f"Immediately failing over to fallback: {settings.fallback_provider}")
+        return call_llm_fallback(prompt, model)
 
 
 def call_llm_with_retry(prompt: str, model: str, max_retries: int = 3) -> str:
-    """
-    Fix 8: exponential backoff using threading.Event.wait() instead of time.sleep().
-    Event.wait(timeout) suspends only the calling thread and can be cancelled
-    externally without freezing other threads in a ThreadingHTTPServer context.
-    """
+    """Exponential backoff retry wrapper using threading.Event.wait()."""
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:
@@ -478,7 +506,7 @@ def call_llm_with_retry(prompt: str, model: str, max_retries: int = 3) -> str:
                     f" in {wait_sec}s — {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
-                _retry_event.wait(timeout=wait_sec)  # non-blocking to other threads
+                _retry_event.wait(timeout=wait_sec)
     raise RuntimeError(f"LLM call failed after {max_retries} retries: {last_err}") from last_err
 
 
@@ -527,14 +555,7 @@ def build_prompt(
     round_num: int,
     peer_reviews: list | None = None,
 ) -> str:
-    """
-    Fix 11: peer reviews are grouped chronologically by their originating round
-    so agents can distinguish initial positions from subsequent challenges.
-    Each agent's own prior reviews are flagged so Round-3 agents can trace
-    their full debate trajectory and make genuinely informed final decisions.
-    Peer reviews are sanitized and truncated (max 800 chars) to prevent prompt
-    injection and context bloat.
-    """
+    """Chronologically format peer reviews and prior reviews for chronological debate context."""
     prompt = BASE_PROMPT.format(
         agent_name=agent["name"],
         agent_role=agent["role"],
@@ -549,13 +570,11 @@ def build_prompt(
         current_round_number=round_num,
     )
     if peer_reviews:
-        # Round-accurate label so agents know exactly what debate context they hold
         if round_num == 2:
             label = "ROUND 1 PEER REVIEWS — Identify disagreements and prepare challenges"
         else:
             label = "ACCUMULATED DEBATE HISTORY (Rounds 1 & 2) — Use to finalise your position"
         prompt += f"\n# {label}\n"
-        # Group by originating round for chronological clarity
         by_round: dict = {}
         for r in peer_reviews:
             by_round.setdefault(r.round, []).append(r)
@@ -563,14 +582,10 @@ def build_prompt(
             prompt += f"\n## Round {rnd} Reviews\n"
             for r in by_round[rnd]:
                 own = " <- YOUR OWN PRIOR REVIEW" if r.agent_name == agent["name"] else ""
-
-                # Sanitize and truncate justification to 800 chars to prevent prompt injection and context bloat
                 clean_just = r.justification or ""
-                # Strip markdown code blocks or prompt tags to avoid leakage/hijacking
                 clean_just = clean_just.replace("```", " ").replace("#", " ").strip()
                 if len(clean_just) > 800:
                     clean_just = clean_just[:800] + "... [TRUNCATED FOR CONTEXT LIMITS]"
-
                 prompt += (
                     f"\n### {r.agent_name}{own} ({r.criterion}): {r.score}/5.0\n"
                     f"{clean_just}\n"
@@ -600,66 +615,36 @@ def run_round(
     round_num: int,
     peer_reviews: list | None = None,
 ) -> list:
-    """
-    Fix 16: named exception types, stderr logging for all failure modes.
-    A structured retry is attempted on JSON-parse failures before accepting
-    the fallback score, preventing silent corruption of consensus data.
-    """
+    """Run deliberation for this round, checking structured outputs JSON format."""
     reviews = []
     for agent in AGENTS:
         prompt = build_prompt(agent, paper, round_num, peer_reviews)
 
         try:
             response = call_llm_with_retry(prompt, agent["model"])
-        except RuntimeError as exc:
+        except Exception as exc:
             print(
-                f"Warning: [{agent['name']}] LLM exhausted retries in round {round_num}: {exc}",
+                f"Warning: [{agent['name']}] LLM failed in round {round_num}: {exc}",
                 file=sys.stderr,
             )
             reviews.append(AgentReview(
                 agent_name=agent["name"], criterion=agent["criterion"],
                 score=3.0,
-                justification=f"LLM unavailable after all retries: {exc}",
+                justification=f"LLM call failed: {exc}",
                 evidence=[], round=round_num,
             ))
             continue
 
-        data: dict = {}
-        score: float = 3.0
         try:
-            data  = json.loads(response)
+            data = json.loads(response)
             score = max(1.0, min(5.0, float(data.get("score", 3.0))))
-        except (json.JSONDecodeError, ValueError, TypeError) as parse_err:
-            print(
-                f"Warning: [{agent['name']}] JSON parse error round {round_num}: {parse_err}. Retrying...",
-                file=sys.stderr,
-            )
-            retry_prompt = prompt + (
-                "\n\nCRITICAL: Your previous response could not be parsed. "
-                "Output ONLY valid JSON matching the schema — no extra text, no markdown."
-            )
-            try:
-                data  = json.loads(call_llm_with_retry(retry_prompt, agent["model"]))
-                score = max(1.0, min(5.0, float(data.get("score", 3.0))))
-            except (json.JSONDecodeError, ValueError, TypeError) as exc2:
-                print(
-                    f"Warning: [{agent['name']}] JSON parse failed after retry in round {round_num}: {exc2}",
-                    file=sys.stderr,
-                )
-                data = {"justification": f"JSON parse failed after retry: {exc2}", "evidence": []}
-            except RuntimeError as exc3:
-                print(
-                    f"Warning: [{agent['name']}] Retry LLM call failed in round {round_num}: {exc3}",
-                    file=sys.stderr,
-                )
-                data = {"justification": f"LLM retry call failed: {exc3}", "evidence": []}
         except Exception as exc:
             print(
-                f"Warning: [{agent['name']}] Unexpected error in round {round_num}: "
-                f"{type(exc).__name__}: {exc}",
+                f"Warning: [{agent['name']}] JSON loads failed in round {round_num}: {exc}",
                 file=sys.stderr,
             )
-            data = {"justification": f"Unexpected error: {type(exc).__name__}: {exc}", "evidence": []}
+            score = 3.0
+            data = {"justification": f"Fallback due to parse error: {exc}", "evidence": []}
 
         reviews.append(AgentReview(
             agent_name=agent["name"],

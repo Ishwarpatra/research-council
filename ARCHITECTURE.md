@@ -92,3 +92,18 @@ Stores appeals history:
 3. **Round 2 (Debate):** Peer reviews from Round 1 are shared. Agents may issue challenges to targets using the `challenge_target` field.
 4. **Round 3 (Consensus):** Agents look at Round 1 & Round 2 logs, finalize scores, and justify positions.
 5. **Consensus Aggregation:** Run weighted calculation and determine final verdict.
+
+## ASGI Deployment Constraints & Concurrency Design
+
+To maintain complete architectural resilience without introducing an external caching layer (such as Redis), the Research Consensus Council is configured under the following operational guidelines:
+
+1. **Single-Instance ASGI Worker Limit (`--workers 1`):**
+   - The application enforces a single-process memory space inside the Docker runtime environment by locking the Uvicorn worker count to exactly 1.
+   - This ensures that the in-memory state of the dynamic `CircuitBreaker` (Closed, Open, Half-Open) is shared consistently across all API request handlers and background deliberation worker threads without state fragmentation.
+
+2. **Non-Blocking `asyncio.Lock` Synchronization:**
+   - State transition updates (`record_success`, `record_failure`) and health queries within the `CircuitBreaker` module use a non-blocking `asyncio.Lock`.
+   - Webhook dispatches are fired asynchronously as background tasks outside the critical lock sections using `asyncio.create_task` with strong references to prevent garbage collection mid-flight, keeping the event loop responsive.
+
+3. **ChromaDB Custom Skill Ingestion:**
+   - Grounded prior art searches run against a local vector database instance configured with `chromadb.PersistentClient`. This provides semantic search results for the validator agent while bypassing external HTTP latency and rate limits.

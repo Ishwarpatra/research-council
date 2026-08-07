@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -5,7 +6,9 @@ from pathlib import Path
 # Add root folder to search path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from council import ScoreCalculator, determine_verdict, load_config
+from circuit import CircuitBreaker
+from config import settings
+from council import ScoreCalculator, determine_verdict
 
 
 class TestConsensusCouncilUnits(unittest.TestCase):
@@ -40,12 +43,10 @@ class TestConsensusCouncilUnits(unittest.TestCase):
         result = ScoreCalculator.compute(weights, scores)
         self.assertEqual(result, 3.75)
 
-    def test_config_validation_schema(self):
-        """Verify invalid environment configurations raise ValueError."""
-        # Clean default loading
-        cfg = load_config()
-        self.assertIn("llm_provider", cfg)
-        self.assertIn(cfg["llm_provider"], ["stub", "ollama", "openai"])
+    def test_settings_validation_loaded(self):
+        """Verify Settings loaded and validated successfully."""
+        self.assertEqual(settings.llm_provider, "stub")
+        self.assertEqual(settings.openai_api_key, "dummy_openai_key")
 
     def test_table_padding_formatter(self):
         """Verify table formatting padding cell values correctly."""
@@ -63,6 +64,33 @@ class TestConsensusCouncilUnits(unittest.TestCase):
         self.assertIn("[1]", citations)
         self.assertIn("(Smith, 2024)", citations)
         self.assertIn("Jones et al. (2020)", citations)
+
+    def test_circuit_breaker_failover(self):
+        """Verify CircuitBreaker state transitions (Closed -> Open -> Half-Open)."""
+        async def run_async_test():
+            # Failure threshold = 2, recovery timeout = 1 second
+            breaker = CircuitBreaker(failure_threshold=2, recovery_timeout=1)
+
+            # Initial state
+            self.assertEqual(await breaker.get_state(), "Closed")
+
+            # Record first failure
+            await breaker.record_failure()
+            self.assertEqual(await breaker.get_state(), "Closed")
+
+            # Record second failure (reaches threshold)
+            await breaker.record_failure()
+            self.assertEqual(await breaker.get_state(), "Open")
+
+            # Sleep 1.1s to allow recovery timeout cooldown to expire
+            await asyncio.sleep(1.1)
+            self.assertEqual(await breaker.get_state(), "Half-Open")
+
+            # Record success (resets to closed)
+            await breaker.record_success()
+            self.assertEqual(await breaker.get_state(), "Closed")
+
+        asyncio.run(run_async_test())
 
 if __name__ == "__main__":
     unittest.main()

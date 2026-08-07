@@ -24,3 +24,40 @@ This document catalogs the custom agent implementations and tool boundaries in t
 
 ### 4. Interactive Human-in-the-Loop Processor
 - **Capability:** Pauses execution at round boundaries to enable reviews of intermediate prompts, justifications, and scores. Allows developers/evaluators to approve, override, or abort execution.
+
+## Custom Agent: Prior Art Validator
+* **Role**: Cross-references claims made by the primary deliberation agents against a local dataset of verified research papers.
+* **Trigger Mechanism**: Invoked during Round 2 of the deliberation state engine if the consensus score drops below a 3.5 threshold, or if an agent explicitly requests claim verification.
+
+## Custom Skill: Semantic Vector Retrieval (ChromaDB)
+* **Description**: A local retrieval-augmented generation (RAG) tool that performs semantic searches against an offline ChromaDB instance to retrieve relevant source documents without incurring external API latency.
+
+### LLM Tool Integration Schema (OpenAI Format)
+The following JSON schema is injected into the payload when routing to the Prior Art Validator agent:
+
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "query_prior_art",
+    "description": "Searches the local vector database for existing research and prior art related to a specific scientific claim.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query_text": {
+          "type": "string",
+          "description": "The specific scientific claim or keyword phrase to verify against the local database."
+        },
+        "n_results": {
+          "type": "integer",
+          "description": "The number of top semantic matches to retrieve. Defaults to 3.",
+          "minimum": 1,
+          "maximum": 5
+        }
+      },
+      "required": ["query_text"],
+      "additionalProperties": false
+    }
+  }
+}
+```
