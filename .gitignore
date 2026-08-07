@@ -4,3 +4,5 @@ council_notifications.log
 __pycache__/
 *.pyc
 council_config.json
+build/
+*.egg-info/
