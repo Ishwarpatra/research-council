@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useDeliberationStream } from './hooks/useDeliberationStream';
+import { DataPanel } from './components/DataPanel';
+import { TokenStream } from './components/TokenStream';
+import { ApprovalControls } from './components/ApprovalControls';
 
 interface Paper {
   file_path: string;
@@ -138,20 +141,15 @@ export default function App() {
               </div>
               
               {/* Token Buffer Stream */}
-              {liveTokenBuffer && (
-                <div style={{ background: '#1e2235', padding: '12px', borderRadius: '10px', border: '1px solid #2b3050', marginBottom: '14px' }}>
-                  <h4 style={{ fontSize: '0.75rem', color: '#7a86a1', marginBottom: '6px' }}>Streaming Token Output (Live CoT):</h4>
-                  <pre style={{ fontSize: '0.75rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#e4e8f1' }}>{liveTokenBuffer}</pre>
-                </div>
-              )}
+              <TokenStream tokenBuffer={liveTokenBuffer} />
 
               {/* Action Pause sign-off controls */}
-              {isApprovalRequired && (
-                <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-                  <button className="btn btn-primary" onClick={approveRound}>Approve and Continue</button>
-                  <button className="btn btn-danger" onClick={abortDeliberation}>Abort Deliberation</button>
-                </div>
-              )}
+              <ApprovalControls
+                isApprovalRequired={isApprovalRequired}
+                roundNum={1}
+                onApprove={approveRound}
+                onAbort={abortDeliberation}
+              />
             </div>
           )}
 
@@ -172,25 +170,12 @@ export default function App() {
           {/* Selected Paper Details */}
           {selectedPaper ? (
             <div>
-              <div className="hitl-panel" style={{ display: 'flex', gap: '20px', alignItems: 'center', marginBottom: '20px' }}>
-                <div style={{ width: '78px', height: '78px', borderRadius: '50%', border: '4px solid #22c55e', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
-                  <span style={{ fontSize: '1.35rem', fontWeight: 700, color: '#22c55e' }}>
-                    {delibResult?.aggregate_score?.toFixed(2) || '0.00'}
-                  </span>
-                </div>
-                <div>
-                  <h2 style={{ fontSize: '1.28rem', fontWeight: 700 }}>{delibResult?.verdict || 'Processing'}</h2>
-                  <p style={{ fontSize: '0.72rem', color: '#7a86a1' }}>{selectedPaper}</p>
-                </div>
-              </div>
-
-              {/* Sections summary */}
-              {paperDetails && (
-                <div className="hitl-panel" style={{ marginBottom: '20px' }}>
-                  <h3 style={{ fontSize: '0.85rem', color: '#7c6ff7', textTransform: 'uppercase', marginBottom: '10px' }}>Extracted Abstract</h3>
-                  <p style={{ fontSize: '0.8rem', color: '#7a86a1', lineHeight: 1.6 }}>{paperDetails.abstract}</p>
-                </div>
-              )}
+              <DataPanel
+                aggregateScore={delibResult?.aggregate_score || 0.00}
+                verdict={delibResult?.verdict || 'Processing'}
+                paperPath={selectedPaper}
+                abstractText={paperDetails?.abstract}
+              />
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '35vh', color: '#7a86a1', gap: '10px' }}>
