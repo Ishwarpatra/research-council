@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - LLM_PROVIDER=stub
+      - FALLBACK_PROVIDER=stub
+      - OPENAI_API_KEY=dummy-openai-api-key-value
+      - WEBHOOK_URL=http://localhost:8080/dummy-webhook
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - DB_PATH=/app/data/council.db
+    volumes:
+      - backend_data:/app/data
+    networks:
+      - rcc_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_WSS_URL=ws://localhost:8080
+      - VITE_API_REST_URL=http://localhost:8080
+    depends_on:
+      - backend
+    networks:
+      - rcc_network
+
+volumes:
+  backend_data:
+
+networks:
+  rcc_network:
+    driver: bridge

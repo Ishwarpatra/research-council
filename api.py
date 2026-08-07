@@ -706,6 +706,13 @@ async def get_circuit_health():
     }
 
 
+# Mount static files to serve the compiled frontend if it exists
+frontend_dist = Path(__file__).parent / "frontend" / "dist"
+if frontend_dist.exists():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+
 # ──────────────────────────────────────────────
 # Runner
 # ──────────────────────────────────────────────
