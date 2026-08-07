@@ -1,9 +1,8 @@
+import json
+import threading
+import time
 import unittest
 import urllib.request
-import json
-import time
-import os
-import threading
 from pathlib import Path
 
 # Try to import Playwright for E2E tests, fallback if not installed
@@ -20,11 +19,11 @@ class TestConsensusCouncilE2E(unittest.TestCase):
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from council import start_api_server
-        
+
         # Run server on port 8081 to prevent clashes with port 8080
         cls.server_thread = threading.Thread(
-            target=start_api_server, 
-            args=("127.0.0.1", 8081), 
+            target=start_api_server,
+            args=("127.0.0.1", 8081),
             daemon=True
         )
         cls.server_thread.start()
@@ -65,7 +64,7 @@ class TestConsensusCouncilE2E(unittest.TestCase):
         """Playwright test: navigate dashboard, check visual headings."""
         if not HAS_PLAYWRIGHT:
             self.skipTest("Playwright library is not installed in the current environment.")
-        
+
         with sync_playwright() as p:
             # Headless browser navigation
             browser = p.chromium.launch(headless=True)
@@ -75,7 +74,7 @@ class TestConsensusCouncilE2E(unittest.TestCase):
                 # Verify header title is present and visible
                 header_text = page.locator("header h1").text_content()
                 self.assertIn("Research Consensus Council", header_text)
-                
+
                 # Check list has loading text or loaded entries
                 aside_text = page.locator("aside").text_content()
                 self.assertIn("Processed Papers", aside_text)

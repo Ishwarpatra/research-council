@@ -9,16 +9,18 @@ __version__ = "1.0.0"
 
 import hashlib
 import json
+import logging
 import os
 import re
-import sqlite3
 import sys
 import threading
 import time
-import urllib.request  # Fix 12: moved from inside call_llm to module level
-from contextlib import closing
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+# Import Decoupled Database Access Layer (separation of concerns)
+import db
 
 # PDF extraction
 try:
@@ -30,13 +32,21 @@ try:
 except ImportError:
     PdfReader = None
 
+# Configure container-compliant stream logger outputting to stderr (standard log collectors capture this)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+logger = logging.getLogger("rcc")
+
 
 # ──────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────
 
 def load_config() -> dict:
-    """Load config from environment variables + optional JSON file."""
+    """Load config from environment variables + optional JSON file with validation check."""
     cfg = {
         "db_path":      os.getenv("RCC_DB",           "council.db"),
         "llm_provider": os.getenv("RCC_LLM_PROVIDER", "stub"),   # stub|ollama|openai
@@ -74,10 +84,37 @@ def load_config() -> dict:
         try:
             cfg.update(json.loads(cfg_path.read_text(encoding="utf-8")))
         except json.JSONDecodeError as exc:
-            print(
-                f"Warning: council_config.json is malformed ({exc}). Using defaults.",
-                file=sys.stderr,
-            )
+            logger.warning("council_config.json is malformed (%s). Using defaults.", exc)
+
+    # Configuration validation schema to capture errors before runtime
+    provider = cfg.get("llm_provider")
+    if provider not in ("stub", "ollama", "openai"):
+        raise ValueError(
+            f"Invalid RCC_LLM_PROVIDER value: '{provider}'. "
+            "Supported provider strings are: 'stub', 'ollama', 'openai'."
+        )
+
+    w = cfg.get("weights", {})
+    required_keys = {
+        "Clarity & Presentation",
+        "Methodology Rigor",
+        "Novelty & Significance",
+        "Ethics & Integrity",
+        "Practical Impact"
+    }
+    if set(w.keys()) != required_keys:
+        raise ValueError(
+            f"Weights criteria keys are invalid. Required: {list(required_keys)}. Got: {list(w.keys())}"
+        )
+
+    w_sum = sum(w.values())
+    if not (0.999 <= w_sum <= 1.001):
+        raise ValueError(
+            f"Configuration weights sum must equal 1.0. Currently sums to: {w_sum:.4f}"
+        )
+
+    # Initialize dynamic DB configuration
+    db.configure_db_path(cfg["db_path"])
     return cfg
 
 
@@ -98,75 +135,11 @@ def _is_stub() -> bool:
     return True
 
 
-# ──────────────────────────────────────────────
-# Database (persistence + audit log)
-# ──────────────────────────────────────────────
+# Decoupled database function adapters mapping to DB layer
+def init_db():
+    db.init_db()
 
-DB_SCHEMA = """
-CREATE TABLE IF NOT EXISTS papers (
-    id INTEGER PRIMARY KEY,
-    file_path TEXT UNIQUE,
-    content_hash TEXT,
-    abstract TEXT, methods TEXT, results TEXT, claims TEXT,
-    full_text TEXT,
-    created_at REAL
-);
-CREATE TABLE IF NOT EXISTS reviews (
-    id INTEGER PRIMARY KEY,
-    paper_id INTEGER,
-    agent_name TEXT,
-    criterion TEXT,
-    score REAL,
-    justification TEXT,
-    evidence TEXT,
-    challenge_target TEXT DEFAULT '',
-    round_num INTEGER,
-    created_at REAL,
-    FOREIGN KEY(paper_id) REFERENCES papers(id)
-);
-CREATE TABLE IF NOT EXISTS deliberations (
-    id INTEGER PRIMARY KEY,
-    paper_id INTEGER,
-    aggregate_score REAL,
-    verdict TEXT,
-    report_json TEXT,
-    created_at REAL,
-    FOREIGN KEY(paper_id) REFERENCES papers(id)
-);
-CREATE TABLE IF NOT EXISTS appeals (
-    id INTEGER PRIMARY KEY,
-    paper_id INTEGER,
-    author_rebuttal TEXT,
-    status TEXT DEFAULT 'pending',
-    new_verdict TEXT,
-    created_at REAL,
-    FOREIGN KEY(paper_id) REFERENCES papers(id)
-);
-CREATE INDEX IF NOT EXISTS idx_reviews_paper ON reviews(paper_id);
-CREATE INDEX IF NOT EXISTS idx_delib_paper ON deliberations(paper_id);
-"""
-
-
-def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(CFG["db_path"])
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db() -> None:
-    """Create schema tables if they do not exist. Called once at module startup."""
-    with closing(_db()) as conn:
-        conn.executescript(DB_SCHEMA)
-        conn.commit()
-        # Migration: add challenge_target column to existing databases that predate it
-        try:
-            conn.execute("ALTER TABLE reviews ADD COLUMN challenge_target TEXT DEFAULT ''")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists — safe to ignore
-
-
-# Initialise exactly once at module load — never inside run_council/submit_appeal
+# Run database setup initially
 init_db()
 
 
@@ -175,75 +148,36 @@ def content_hash(text: str) -> str:
 
 
 def save_paper(paper: "PaperContent") -> int:
-    """
-    Upsert paper record preserving the original paper_id on re-runs.
-    INSERT OR REPLACE would delete-then-reinsert, generating a new rowid and
-    orphaning every reviews/deliberations FK row linked to the old paper_id.
-    ON CONFLICT DO UPDATE keeps the existing rowid intact.
-    """
-    with closing(_db()) as conn:
-        conn.execute(
-            """INSERT INTO papers
-               (file_path, content_hash, abstract, methods, results, claims, full_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(file_path) DO UPDATE SET
-                 content_hash=excluded.content_hash,
-                 abstract=excluded.abstract,
-                 methods=excluded.methods,
-                 results=excluded.results,
-                 claims=excluded.claims,
-                 full_text=excluded.full_text""",
-            (paper.file_path, paper.content_hash, paper.abstract, paper.methods,
-             paper.results, paper.claims, paper.full_text, time.time()),
-        )
-        conn.commit()
-        row = conn.execute(
-            "SELECT id FROM papers WHERE file_path = ?", (paper.file_path,)
-        ).fetchone()
-        return row["id"]
+    return db.save_paper(
+        paper.file_path, paper.content_hash, paper.abstract,
+        paper.methods, paper.results, paper.claims, paper.full_text
+    )
 
 
 def load_paper(file_path: str) -> "PaperContent | None":
-    with closing(_db()) as conn:
-        row = conn.execute(
-            "SELECT * FROM papers WHERE file_path = ?", (file_path,)
-        ).fetchone()
-        if row:
-            return PaperContent(
-                file_path=row["file_path"],
-                content_hash=row["content_hash"],
-                abstract=row["abstract"]  or "",
-                methods=row["methods"]   or "",
-                results=row["results"]   or "",
-                claims=row["claims"]     or "",
-                full_text=row["full_text"] or "",
-            )
+    p = db.load_paper(file_path)
+    if p:
+        return PaperContent(
+            file_path=p["file_path"],
+            content_hash=p["content_hash"],
+            abstract=p["abstract"] or "",
+            methods=p["methods"] or "",
+            results=p["results"] or "",
+            claims=p["claims"] or "",
+            full_text=p["full_text"] or "",
+        )
     return None
 
 
 def save_review(paper_id: int, review: "AgentReview") -> None:
-    with closing(_db()) as conn:
-        conn.execute(
-            """INSERT INTO reviews
-               (paper_id, agent_name, criterion, score, justification, evidence,
-                challenge_target, round_num, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (paper_id, review.agent_name, review.criterion, review.score,
-             review.justification, json.dumps(review.evidence),
-             review.challenge_target, review.round, time.time()),
-        )
-        conn.commit()
+    db.save_review(
+        paper_id, review.agent_name, review.criterion, review.score,
+        review.justification, review.evidence, review.challenge_target, review.round
+    )
 
 
 def save_deliberation(paper_id: int, aggregate: float, verdict: str, report: dict) -> None:
-    with closing(_db()) as conn:
-        conn.execute(
-            """INSERT INTO deliberations
-               (paper_id, aggregate_score, verdict, report_json, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (paper_id, aggregate, verdict, json.dumps(report), time.time()),
-        )
-        conn.commit()
+    db.save_deliberation(paper_id, aggregate, verdict, report)
 
 
 # ──────────────────────────────────────────────
@@ -748,7 +682,7 @@ def _should_prompt() -> bool:
     return sys.stdin.isatty()
 
 
-def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> dict:
+def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl_hook=None) -> dict:
     """
     Fix 17: core deliberation engine decoupled from file-path concerns.
     Accepts a pre-built PaperContent so appeal re-deliberations can inject
@@ -779,7 +713,11 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> d
     for r in r1:
         save_review(paper_id, r)
 
-    if _should_prompt():
+    if hitl_hook:
+        approved = hitl_hook(1, r1)
+        if not approved:
+            raise RuntimeError("Deliberation aborted during Round 1 review.")
+    elif _should_prompt():
         print("\n--- [Human-in-the-Loop] Round 1 Complete ---")
         for r in r1:
             print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0")
@@ -793,7 +731,11 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> d
     for r in r2:
         save_review(paper_id, r)
 
-    if _should_prompt():
+    if hitl_hook:
+        approved = hitl_hook(2, r2)
+        if not approved:
+            raise RuntimeError("Deliberation aborted during Round 2 review.")
+    elif _should_prompt():
         print("\n--- [Human-in-the-Loop] Round 2 Complete ---")
         for r in r2:
             print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0 (Challenging: {r.challenge_target or 'None'})")
@@ -820,7 +762,7 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> d
     return report
 
 
-def run_council(paper_path: str) -> dict:
+def run_council(paper_path: str, hitl_hook=None) -> dict:
     """CLI entry: extract paper -> 3-round deliberation -> save & return report."""
     print(f"Extracting: {paper_path}")
     paper = extract_content(paper_path)
@@ -831,7 +773,7 @@ def run_council(paper_path: str) -> dict:
         print("Content unchanged - using cached section splits")
         paper = cached
 
-    return _run_council_on_paper(paper)   # Fix 10: init_db() NOT called here
+    return _run_council_on_paper(paper, hitl_hook=hitl_hook)   # Fix 10: init_db() NOT called here
 
 
 def determine_verdict(score: float) -> str:
@@ -954,20 +896,11 @@ def submit_appeal(paper_path: str, author_rebuttal: str) -> dict:
         return {"error": "Paper not found. Run council first."}
 
     # Persist the appeal and retrieve the existing paper_id
-    with closing(_db()) as conn:
-        pid_row = conn.execute(
-            "SELECT id FROM papers WHERE file_path = ?", (paper_path,)
-        ).fetchone()
-        if not pid_row:
-            return {"error": "Paper ID not found in database."}
-        paper_id = pid_row["id"]
-        cur = conn.execute(
-            "INSERT INTO appeals (paper_id, author_rebuttal, status, created_at) "
-            "VALUES (?, ?, 'pending', ?)",
-            (paper_id, author_rebuttal, time.time()),
-        )
-        appeal_id = cur.lastrowid
-        conn.commit()
+    paper_id = db.get_paper_id_by_path(paper_path)
+    if not paper_id:
+        return {"error": "Paper ID not found in database."}
+
+    appeal_id = db.insert_appeal(paper_id, author_rebuttal)
 
     # In-memory augmented copy — the DB paper record is NOT mutated
     appeal_paper = PaperContent(
@@ -986,12 +919,7 @@ def submit_appeal(paper_path: str, author_rebuttal: str) -> dict:
 
     # Record the appeal verdict
     new_verdict = report.get("executive_summary", {}).get("verdict", "Unknown")
-    with closing(_db()) as conn:
-        conn.execute(
-            "UPDATE appeals SET status = 'resolved', new_verdict = ? WHERE id = ?",
-            (new_verdict, appeal_id),
-        )
-        conn.commit()
+    db.update_appeal_verdict(appeal_id, new_verdict)
 
     return report
 
@@ -1189,219 +1117,19 @@ loadPapers();setInterval(loadPapers,30000);
 
 
 # ──────────────────────────────────────────────
-# HTTP API Server (Fix 2: ThreadingHTTPServer, Fix 3: HTML dashboard)
+# HTTP API Server Gateway (Delegated to FastAPI api.py microservice)
 # ──────────────────────────────────────────────
 
 def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
-    """
-    Fix 2: ThreadingHTTPServer — each request runs in its own thread so
-    long-running LLM deliberations never freeze the server or lock out endpoints.
-    Fix 3: HTML dashboard served at / and /dashboard.
-    """
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from urllib.parse import parse_qs, urlparse
-
-    class APIHandler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):
-            pass  # suppress default per-request stdout noise
-
-        def do_GET(self):
-            parsed = urlparse(self.path)
-            pth    = parsed.path
-            params = parse_qs(parsed.query)
-
-            if pth in ("/", "/dashboard"):
-                self._html(DASHBOARD_HTML)
-            elif pth == "/api/papers":
-                self._json(_list_papers())
-            elif pth == "/api/paper" and "path" in params:
-                self._json(_get_paper_detail(params["path"][0]))
-            elif pth == "/api/reviews" and "path" in params:
-                self._json(_get_reviews(params["path"][0]))
-            elif pth == "/api/deliberation" and "path" in params:
-                self._json(_get_deliberation(params["path"][0]))
-            elif pth == "/api/settings":
-                # Get current config with key redacted for safety
-                c = dict(CFG)
-                if "openai_key" in c:
-                    c["openai_key"] = "[REDACTED]" if c["openai_key"] else ""
-                self._json(c)
-            elif pth == "/api/audit":
-                self._json(run_monthly_audit())
-            else:
-                self._404()
-
-        def do_POST(self):
-            global WEIGHTS
-            parsed = urlparse(self.path)
-            pth    = parsed.path
-
-            if pth == "/api/settings":
-                content_len = int(self.headers.get("Content-Length", 0))
-                try:
-                    body = self.rfile.read(content_len)
-                    data = json.loads(body.decode("utf-8"))
-                except Exception as exc:
-                    self._error(400, f"Malformed JSON: {exc}")
-                    return
-
-                new_weights = data.get("weights")
-                if not new_weights:
-                    self._error(400, "Missing 'weights' key in request payload.")
-                    return
-
-                # Validate criteria keys match exactly
-                req_keys = set(WEIGHTS.keys())
-                got_keys = set(new_weights.keys())
-                if req_keys != got_keys:
-                    self._error(400, f"Invalid weights criteria keys. Expected: {list(req_keys)}")
-                    return
-
-                # Validate types and sum
-                try:
-                    parsed_weights = {k: float(v) for k, v in new_weights.items()}
-                except (ValueError, TypeError):
-                    self._error(400, "All weight values must be numbers.")
-                    return
-
-                w_sum = sum(parsed_weights.values())
-                if not (0.999 <= w_sum <= 1.001):
-                    self._error(400, f"Weights must sum to 1.0 (got {w_sum:.4f})")
-                    return
-
-                # Schema validation passed. Persist config file
-                cfg_path = Path("council_config.json")
-                try:
-                    persisted = {}
-                    if cfg_path.exists():
-                        persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
-                    persisted["weights"] = parsed_weights
-                    cfg_path.write_text(json.dumps(persisted, indent=2), encoding="utf-8")
-
-                    # Update local state live
-                    CFG["weights"] = parsed_weights
-                    WEIGHTS = parsed_weights
-                except Exception as exc:
-                    self._error(500, f"Could not write configuration file: {exc}")
-                    return
-
-                c = dict(CFG)
-                if "openai_key" in c:
-                    c["openai_key"] = "[REDACTED]" if c["openai_key"] else ""
-                self._json(c)
-            else:
-                self._404()
-
-        def _html(self, body: str):
-            b = body.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(b)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(b)
-
-        def _json(self, data):
-            b = json.dumps(data, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(b)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(b)
-
-        def _error(self, code: int, msg: str):
-            b = json.dumps({"error": msg}, indent=2).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(b)))
-            self.end_headers()
-            self.wfile.write(b)
-
-        def _404(self):
-            self.send_response(404)
-            self.end_headers()
-
-    def _list_papers() -> list:
-        with closing(_db()) as conn:
-            rows = conn.execute(
-                "SELECT file_path, content_hash, created_at FROM papers ORDER BY created_at DESC"
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def _get_paper_detail(fp: str) -> dict:
-        paper = load_paper(fp)
-        if not paper:
-            return {"error": "not found"}
-        return {
-            "file_path": paper.file_path,
-            "abstract":  paper.abstract[:600],
-            "methods":   paper.methods[:600],
-            "results":   paper.results[:600],
-            "claims":    paper.claims[:600],
-        }
-
-    def _get_reviews(fp: str) -> dict:
-        with closing(_db()) as conn:
-            pid = conn.execute(
-                "SELECT id FROM papers WHERE file_path = ?", (fp,)
-            ).fetchone()
-            if not pid:
-                return {"error": "not found"}
-            rows = conn.execute(
-                "SELECT * FROM reviews WHERE paper_id = ? ORDER BY round_num, agent_name",
-                (pid["id"],),
-            ).fetchall()
-        by_round: dict = {}
-        for r in rows:
-            review_dict = dict(r)
-            # Parse evidence JSON array to avoid double-encoding issues
-            if isinstance(review_dict.get("evidence"), str):
-                try:
-                    review_dict["evidence"] = json.loads(review_dict["evidence"])
-                except Exception:
-                    review_dict["evidence"] = []
-            by_round.setdefault(r["round_num"], []).append(review_dict)
-        return {"rounds": by_round}
-
-    def _get_deliberation(fp: str) -> dict:
-        with closing(_db()) as conn:
-            pid = conn.execute(
-                "SELECT id FROM papers WHERE file_path = ?", (fp,)
-            ).fetchone()
-            if not pid:
-                return {"error": "not found"}
-            row = conn.execute(
-                "SELECT * FROM deliberations WHERE paper_id = ? ORDER BY created_at DESC LIMIT 1",
-                (pid["id"],),
-            ).fetchone()
-        if not row:
-            return {"error": "no deliberation found"}
-
-        delib_dict = dict(row)
-        # Parse report_json structure to avoid double-encoding inside returned JSON payload
-        if isinstance(delib_dict.get("report_json"), str):
-            try:
-                delib_dict["report_json"] = json.loads(delib_dict["report_json"])
-            except Exception:
-                pass
-        return delib_dict
-
-    server = ThreadingHTTPServer((host, port), APIHandler)
-    print(f"Dashboard  -> http://{host}:{port}/")
-    print(f"API papers -> http://{host}:{port}/api/papers")
-    print(f"API audit  -> http://{host}:{port}/api/audit")
-    server.serve_forever()
+    """Delegated to api.py FastAPI service to support live HITL UI dashboard."""
+    import api
+    api.start_server(host, port)
 
 
 def run_api_server() -> None:
     """CLI entry: python council.py --api"""
-    # threading already imported at module level (Fix 12)
-    t = threading.Thread(target=start_api_server, daemon=True)
-    t.start()
     try:
-        while True:
-            time.sleep(1)
+        start_api_server("127.0.0.1", 8080)
     except KeyboardInterrupt:
         print("\nAPI server stopped")
 
@@ -1412,21 +1140,7 @@ def run_api_server() -> None:
 
 def run_monthly_audit() -> dict:
     """QATool: compare agent scoring patterns across deliberations for drift/bias detection."""
-    with closing(_db()) as conn:
-        rows = conn.execute("""
-            SELECT d.paper_id, d.verdict, d.aggregate_score,
-                   r.agent_name, r.criterion, r.score, r.round_num
-            FROM deliberations d
-            JOIN reviews r ON d.paper_id = r.paper_id
-            WHERE r.round_num = 3
-            ORDER BY d.created_at DESC
-            LIMIT 1000
-        """).fetchall()
-
-        # Get count of unique papers processed from deliberations
-        distinct_count = conn.execute(
-            "SELECT COUNT(DISTINCT paper_id) FROM deliberations"
-        ).fetchone()[0]
+    rows, distinct_count = db.get_audit_reviews_and_deliberations()
 
     if not rows:
         return {"status": "no_data", "message": "No completed deliberations to audit."}
@@ -1492,12 +1206,11 @@ def main():
         if len(sys.argv) < 3:
             print("Usage: python council.py --history <paper>")
             sys.exit(1)
-        with closing(_db()) as conn:
-            rows = conn.execute(
-                "SELECT * FROM reviews "
-                "WHERE paper_id = (SELECT id FROM papers WHERE file_path = ?)",
-                (sys.argv[2],),
-            ).fetchall()
+        pid = db.get_paper_id_by_path(sys.argv[2])
+        if not pid:
+            print("No review history found for that paper.")
+            sys.exit(1)
+        rows = db.get_paper_reviews(pid)
         if not rows:
             print("No review history found for that paper.")
             sys.exit(1)
