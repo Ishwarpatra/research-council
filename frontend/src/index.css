@@ -1,0 +1,60 @@
+:root {
+  --bg: #0d0f1a;
+  --surface: #151826;
+  --s2: #1e2235;
+  --card: #242840;
+  --accent: #7c6ff7;
+  --text: #e4e8f1;
+  --muted: #7a86a1;
+  --border: #2b3050;
+  --acc: #22c55e;
+  --acc-bg: rgba(34, 197, 94, 0.13);
+  --min: #f59e0b;
+  --min-bg: rgba(245, 158, 11, 0.13);
+  --maj: #f97316;
+  --maj-bg: rgba(249, 115, 22, 0.13);
+  --rej: #ef4444;
+  --rej-bg: rgba(239, 68, 68, 0.13);
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --r: 10px;
+  --rl: 16px;
+  --sh: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* Glassmorphism panel styles */
+.hitl-panel {
+  background: rgba(21, 24, 38, 0.7);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--rl);
+  padding: 20px;
+  box-shadow: var(--sh);
+}
+
+.sp {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

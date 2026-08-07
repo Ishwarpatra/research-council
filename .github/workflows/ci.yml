@@ -33,5 +33,9 @@ jobs:
         python -m py_compile council.py
 
     - name: Run E2E and API tests
+      env:
+        OPENAI_API_KEY: dummy_openai_key
+        WEBHOOK_URL: http://localhost:8080/dummy_webhook
       run: |
-        python -m unittest discover -s tests -p "test_*.py"
+        pip install pytest
+        pytest tests/
