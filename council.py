@@ -4,18 +4,21 @@ Research Consensus Council — Multi-agent deliberation with persistence & real 
 5 agents, 3-round debate, weighted scoring, PDF input, SQLite audit log, HTTP API + dashboard.
 """
 
-import json
-import sys
-import os
-import sqlite3
+__version__ = "1.0.0"
+
+
 import hashlib
-import time
+import json
+import os
 import re
+import sqlite3
+import sys
 import threading
-import urllib.request          # Fix 12: moved from inside call_llm to module level
-from pathlib import Path
-from dataclasses import dataclass
+import time
+import urllib.request  # Fix 12: moved from inside call_llm to module level
 from contextlib import closing
+from dataclasses import dataclass
+from pathlib import Path
 
 # PDF extraction
 try:
@@ -595,6 +598,8 @@ def build_prompt(
     so agents can distinguish initial positions from subsequent challenges.
     Each agent's own prior reviews are flagged so Round-3 agents can trace
     their full debate trajectory and make genuinely informed final decisions.
+    Peer reviews are sanitized and truncated (max 800 chars) to prevent prompt
+    injection and context bloat.
     """
     prompt = BASE_PROMPT.format(
         agent_name=agent["name"],
@@ -624,9 +629,17 @@ def build_prompt(
             prompt += f"\n## Round {rnd} Reviews\n"
             for r in by_round[rnd]:
                 own = " <- YOUR OWN PRIOR REVIEW" if r.agent_name == agent["name"] else ""
+
+                # Sanitize and truncate justification to 800 chars to prevent prompt injection and context bloat
+                clean_just = r.justification or ""
+                # Strip markdown code blocks or prompt tags to avoid leakage/hijacking
+                clean_just = clean_just.replace("```", " ").replace("#", " ").strip()
+                if len(clean_just) > 800:
+                    clean_just = clean_just[:800] + "... [TRUNCATED FOR CONTEXT LIMITS]"
+
                 prompt += (
                     f"\n### {r.agent_name}{own} ({r.criterion}): {r.score}/5.0\n"
-                    f"{r.justification}\n"
+                    f"{clean_just}\n"
                 )
     return prompt
 
@@ -726,6 +739,15 @@ def run_round(
     return reviews
 
 
+def _should_prompt() -> bool:
+    """Return True if the engine should pause for human approval between rounds."""
+    if os.getenv("RCC_NON_INTERACTIVE") == "true":
+        return False
+    if "--non-interactive" in sys.argv:
+        return False
+    return sys.stdin.isatty()
+
+
 def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> dict:
     """
     Fix 17: core deliberation engine decoupled from file-path concerns.
@@ -757,10 +779,28 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> d
     for r in r1:
         save_review(paper_id, r)
 
+    if _should_prompt():
+        print("\n--- [Human-in-the-Loop] Round 1 Complete ---")
+        for r in r1:
+            print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0")
+        val = input("Press Enter to approve and continue to Round 2 (or type 'abort' to stop): ").strip().lower()
+        if val == "abort":
+            print("Deliberation aborted by user.", file=sys.stderr)
+            sys.exit(1)
+
     print("Deliberating: Round 2 - Peer debate...")
     r2 = run_round(paper, 2, r1)          # agents see Round 1 history
     for r in r2:
         save_review(paper_id, r)
+
+    if _should_prompt():
+        print("\n--- [Human-in-the-Loop] Round 2 Complete ---")
+        for r in r2:
+            print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0 (Challenging: {r.challenge_target or 'None'})")
+        val = input("Press Enter to approve and continue to Round 3 (or type 'abort' to stop): ").strip().lower()
+        if val == "abort":
+            print("Deliberation aborted by user.", file=sys.stderr)
+            sys.exit(1)
 
     print("Deliberating: Round 3 - Final positions...")
     r3 = run_round(paper, 3, r1 + r2)    # agents see full accumulated history
@@ -1158,8 +1198,8 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     long-running LLM deliberations never freeze the server or lock out endpoints.
     Fix 3: HTML dashboard served at / and /dashboard.
     """
-    from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-    from urllib.parse import urlparse, parse_qs
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
 
     class APIHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -1237,7 +1277,7 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
                         persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
                     persisted["weights"] = parsed_weights
                     cfg_path.write_text(json.dumps(persisted, indent=2), encoding="utf-8")
-                    
+
                     # Update local state live
                     CFG["weights"] = parsed_weights
                     WEIGHTS = parsed_weights
@@ -1337,7 +1377,7 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
             ).fetchone()
         if not row:
             return {"error": "no deliberation found"}
-        
+
         delib_dict = dict(row)
         # Parse report_json structure to avoid double-encoding inside returned JSON payload
         if isinstance(delib_dict.get("report_json"), str):
@@ -1382,7 +1422,7 @@ def run_monthly_audit() -> dict:
             ORDER BY d.created_at DESC
             LIMIT 1000
         """).fetchall()
-        
+
         # Get count of unique papers processed from deliberations
         distinct_count = conn.execute(
             "SELECT COUNT(DISTINCT paper_id) FROM deliberations"
@@ -1423,14 +1463,19 @@ def run_monthly_audit() -> dict:
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage:")
-        print("  python council.py <paper.pdf>           # Run full council")
-        print("  python council.py --appeal <paper.pdf> \"rebuttal text\"  # Submit appeal")
-        print("  python council.py --audit               # Run monthly bias audit")
-        print("  python council.py --history <paper.pdf> # Show review history")
-        print("  python council.py --api                 # Start REST API server")
+        print("  python council.py <paper.pdf> [--non-interactive]   # Run full council")
+        print("  python council.py --appeal <paper.pdf> \"rebuttal\"   # Submit appeal")
+        print("  python council.py --audit                           # Run monthly bias audit")
+        print("  python council.py --history <paper.pdf>             # Show review history")
+        print("  python council.py --api                             # Start REST API server")
+        print("  python council.py --version                         # Output version information")
         return
 
     cmd = sys.argv[1]
+
+    if cmd in ("--version", "-v"):
+        print(f"Research Consensus Council v{__version__}")
+        return
 
     if cmd == "--appeal":
         if len(sys.argv) < 4:
@@ -1464,7 +1509,8 @@ def main():
 
     else:
         try:
-            report = run_council(sys.argv[1])
+            # First argument is assumed to be paper path
+            report = run_council(cmd)
         except FileNotFoundError as exc:
             print(f"Error: File not found: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1472,7 +1518,7 @@ def main():
             print(f"Error executing council: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        out_path = Path(sys.argv[1]).with_suffix(".report.json")
+        out_path = Path(cmd).with_suffix(".report.json")
         out_path.write_text(json.dumps(report, indent=2))
         print(f"Report saved: {out_path}")
 

@@ -1,0 +1,13 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.0
+    hooks:
+      - id: ruff
+        args: [ --fix ]
+  - repo: local
+    hooks:
+      - id: python-syntax
+        name: Python Syntax Compilation check
+        entry: python -m py_compile
+        language: system
+        types: [ python ]

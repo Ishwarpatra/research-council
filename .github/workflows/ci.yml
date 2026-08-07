@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-state: '3.13'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install ruff playwright
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        playwright install chromium
+
+    - name: Lint with ruff
+      run: |
+        ruff check council.py
+
+    - name: Syntax compilation check
+      run: |
+        python -m py_compile council.py
+
+    - name: Run E2E and API tests
+      run: |
+        python -m unittest discover -s tests -p "test_*.py"

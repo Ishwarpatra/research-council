@@ -1,7 +1,7 @@
 {
   "executive_summary": {
     "verdict": "Minor Revisions",
-    "aggregate_score": 4.28,
+    "aggregate_score": 4.3,
     "simulation_mode": true,
     "key_strengths": [
       "Methodology Rigor: strong (4.6/5)",
@@ -79,6 +79,6 @@
   "actionable_feedback": {
     "prioritized_revisions": [],
     "rebuttal_template": "Authors may respond to each criterion above with evidence.",
-    "decision_path": "Current: Minor Revisions (4.28/5). Address major concerns to improve."
+    "decision_path": "Current: Minor Revisions (4.3/5). Address major concerns to improve."
   }
 }
