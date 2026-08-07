@@ -1,0 +1,6 @@
+council.db
+council_notifications.log
+*.report.json
+__pycache__/
+*.pyc
+council_config.json

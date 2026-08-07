@@ -1,10 +1,12 @@
 {
   "executive_summary": {
     "verdict": "Minor Revisions",
-    "aggregate_score": 4.05,
+    "aggregate_score": 4.28,
+    "simulation_mode": true,
     "key_strengths": [
-      "Clarity & Presentation: strong (4.9/5)",
-      "Methodology Rigor: strong (4.8/5)"
+      "Methodology Rigor: strong (4.6/5)",
+      "Novelty & Significance: strong (4.1/5)",
+      "Ethics & Integrity: strong (4.5/5)"
     ],
     "major_concerns": []
   },
@@ -12,68 +14,71 @@
     {
       "agent": "Skeptical Reviewer",
       "criterion": "Clarity & Presentation",
-      "score": 4.9,
-      "justification": "[Orca-2] Stub analysis. Score derived from content hash 300739f7.",
+      "score": 3.5,
+      "justification": "[Orca-2] Stub analysis. Score derived from content hash 0ea4a22d.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
-      ]
+      ],
+      "challenge_target": ""
     },
     {
-      "agent": "Methodologist",
+      "agent": "Method Evaluator",
       "criterion": "Methodology Rigor",
-      "score": 4.8,
-      "justification": "[Phi-4] Stub analysis. Score derived from content hash 2bc6ce06.",
+      "score": 4.6,
+      "justification": "[Phi-4] Stub analysis. Score derived from content hash 070e87c8.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
-      ]
+      ],
+      "challenge_target": ""
     },
     {
       "agent": "Domain Expert",
       "criterion": "Novelty & Significance",
-      "score": 3.4,
-      "justification": "[Mistral-7B] Stub analysis. Score derived from content hash 8447b8c0.",
+      "score": 4.1,
+      "justification": "[Mistral-7B] Stub analysis. Score derived from content hash 26b7ca8f.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
-      ]
+      ],
+      "challenge_target": ""
     },
     {
       "agent": "Ethics Officer",
       "criterion": "Ethics & Integrity",
-      "score": 3.4,
-      "justification": "[Llama-3.2] Stub analysis. Score derived from content hash e9fb5f50.",
+      "score": 4.5,
+      "justification": "[Llama-3.2] Stub analysis. Score derived from content hash f5041ca3.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
-      ]
+      ],
+      "challenge_target": ""
     },
     {
       "agent": "Industry Translator",
       "criterion": "Practical Impact",
-      "score": 3.4,
-      "justification": "[Phi-3] Stub analysis. Score derived from content hash 32822048.",
+      "score": 4.7,
+      "justification": "[Phi-3] Stub analysis. Score derived from content hash e2e9d9b5.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
-      ]
+      ],
+      "challenge_target": ""
     }
   ],
   "consensus_dissent": {
     "agreements": [
-      "Clarity & Presentation: strong (4.9/5)",
-      "Methodology Rigor: strong (4.8/5)"
+      "Methodology Rigor: strong (4.6/5)",
+      "Novelty & Significance: strong (4.1/5)",
+      "Ethics & Integrity: strong (4.5/5)",
+      "Practical Impact: strong (4.7/5)"
     ],
     "disagreements": []
   },
   "actionable_feedback": {
-    "prioritized_revisions": [
-      "Improve Novelty & Significance (score: 3.4/5)",
-      "Improve Ethics & Integrity (score: 3.4/5)",
-      "Improve Practical Impact (score: 3.4/5)"
-    ],
+    "prioritized_revisions": [],
     "rebuttal_template": "Authors may respond to each criterion above with evidence.",
-    "decision_path": "Current: Minor Revisions (4.05/5). Address major concerns to improve."
+    "decision_path": "Current: Minor Revisions (4.28/5). Address major concerns to improve."
   }
 }

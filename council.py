@@ -19,11 +19,11 @@ from contextlib import closing
 
 # PDF extraction
 try:
-    import pdfplumber
+    import pdfplumber  # type: ignore
 except ImportError:
     pdfplumber = None
 try:
-    from pypdf import PdfReader
+    from pypdf import PdfReader  # type: ignore
 except ImportError:
     PdfReader = None
 
@@ -41,11 +41,21 @@ def load_config() -> dict:
         "openai_key":   os.getenv("OPENAI_API_KEY",   ""),
         "webhook_url":  os.getenv("RCC_WEBHOOK_URL",  ""),        # Fix 1: read webhook URL
         "openai_model_map": {
+            # All five route to gpt-4o-mini on the OpenAI path (single-API convenience).
+            # Agent names still encode the intended model persona.
             "Orca-2":     "gpt-4o-mini",
             "Phi-4":      "gpt-4o-mini",
             "Mistral-7B": "gpt-4o-mini",
             "Llama-3.2":  "gpt-4o-mini",
             "Phi-3":      "gpt-4o-mini",
+        },
+        "ollama_model_map": {
+            # Real Ollama model tags — override via council_config.json if your local names differ.
+            "Orca-2":     "orca2",
+            "Phi-4":      "phi4",
+            "Mistral-7B": "mistral",
+            "Llama-3.2":  "llama3.2",
+            "Phi-3":      "phi3",
         },
         "weights": {
             "Clarity & Presentation": 0.20,
@@ -72,6 +82,19 @@ CFG     = load_config()
 WEIGHTS = CFG["weights"]
 
 
+def _is_stub() -> bool:
+    """
+    Return True when no real LLM will be called (stub/fallback mode).
+    Used to gate SIMULATED banners and add simulation_mode flags to reports.
+    """
+    p = CFG["llm_provider"]
+    if p == "ollama":
+        return False
+    if p == "openai" and CFG.get("openai_key"):
+        return False
+    return True
+
+
 # ──────────────────────────────────────────────
 # Database (persistence + audit log)
 # ──────────────────────────────────────────────
@@ -93,6 +116,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     score REAL,
     justification TEXT,
     evidence TEXT,
+    challenge_target TEXT DEFAULT '',
     round_num INTEGER,
     created_at REAL,
     FOREIGN KEY(paper_id) REFERENCES papers(id)
@@ -131,9 +155,15 @@ def init_db() -> None:
     with closing(_db()) as conn:
         conn.executescript(DB_SCHEMA)
         conn.commit()
+        # Migration: add challenge_target column to existing databases that predate it
+        try:
+            conn.execute("ALTER TABLE reviews ADD COLUMN challenge_target TEXT DEFAULT ''")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists — safe to ignore
 
 
-# Fix 10: initialise exactly once at module load — never inside run_council/submit_appeal
+# Initialise exactly once at module load — never inside run_council/submit_appeal
 init_db()
 
 
@@ -142,16 +172,32 @@ def content_hash(text: str) -> str:
 
 
 def save_paper(paper: "PaperContent") -> int:
+    """
+    Upsert paper record preserving the original paper_id on re-runs.
+    INSERT OR REPLACE would delete-then-reinsert, generating a new rowid and
+    orphaning every reviews/deliberations FK row linked to the old paper_id.
+    ON CONFLICT DO UPDATE keeps the existing rowid intact.
+    """
     with closing(_db()) as conn:
-        cur = conn.execute(
-            """INSERT OR REPLACE INTO papers
+        conn.execute(
+            """INSERT INTO papers
                (file_path, content_hash, abstract, methods, results, claims, full_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(file_path) DO UPDATE SET
+                 content_hash=excluded.content_hash,
+                 abstract=excluded.abstract,
+                 methods=excluded.methods,
+                 results=excluded.results,
+                 claims=excluded.claims,
+                 full_text=excluded.full_text""",
             (paper.file_path, paper.content_hash, paper.abstract, paper.methods,
              paper.results, paper.claims, paper.full_text, time.time()),
         )
         conn.commit()
-        return cur.lastrowid
+        row = conn.execute(
+            "SELECT id FROM papers WHERE file_path = ?", (paper.file_path,)
+        ).fetchone()
+        return row["id"]
 
 
 def load_paper(file_path: str) -> "PaperContent | None":
@@ -176,10 +222,12 @@ def save_review(paper_id: int, review: "AgentReview") -> None:
     with closing(_db()) as conn:
         conn.execute(
             """INSERT INTO reviews
-               (paper_id, agent_name, criterion, score, justification, evidence, round_num, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (paper_id, agent_name, criterion, score, justification, evidence,
+                challenge_target, round_num, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (paper_id, review.agent_name, review.criterion, review.score,
-             review.justification, json.dumps(review.evidence), review.round, time.time()),
+             review.justification, json.dumps(review.evidence),
+             review.challenge_target, review.round, time.time()),
         )
         conn.commit()
 
@@ -216,8 +264,9 @@ class AgentReview:
     criterion: str
     score: float
     justification: str
-    evidence: list[str]
+    evidence: list
     round: int
+    challenge_target: str = ""   # Round 2 only: name of challenged peer agent, or empty
 
 
 # ──────────────────────────────────────────────
@@ -228,9 +277,12 @@ AGENTS = [
     {"name": "Skeptical Reviewer", "model": "Orca-2", "criterion": "Clarity & Presentation", "weight": 0.20,
      "role": "Critical evaluator hunting for logical fallacies, overstatements, ambiguities",
      "responsibilities": "Question claims, find counter-examples, identify weaknesses in presentation"},
-    {"name": "Methodologist", "model": "Phi-4", "criterion": "Methodology Rigor", "weight": 0.25,
+    # NOTE: Each agent owns exactly ONE criterion (single-authority model), an intentional
+    # deviation from Architecture §3 which assigns all five criteria per agent.
+    # This avoids inter-criterion averaging inconsistency and matches ScoreCalculator's interface.
+    {"name": "Method Evaluator",     "model": "Phi-4",      "criterion": "Methodology Rigor",       "weight": 0.25,
      "role": "Detail-obsessed rigor specialist",
-     "responsibilities": "Scrutinize experimental design, statistical validity, sample size, confounds"},
+     "responsibilities": "Scrutinise experimental design, statistical validity, sample size, confounds"},
     {"name": "Domain Expert", "model": "Mistral-7B", "criterion": "Novelty & Significance", "weight": 0.20,
      "role": "Field knowledge authority",
      "responsibilities": "Assess novelty vs prior art, identify missing citations, evaluate academic impact"},
@@ -432,7 +484,8 @@ def call_llm(prompt: str, model: str) -> str:
     provider = CFG["llm_provider"]
 
     if provider == "ollama":
-        mapped = CFG["openai_model_map"].get(model, model)
+        # Use the dedicated Ollama map — prevents asking Ollama for "gpt-4o-mini" which doesn't exist locally
+        mapped = CFG["ollama_model_map"].get(model, model)
         req = urllib.request.Request(
             f"{CFG['ollama_host']}/api/generate",
             data=json.dumps({"model": mapped, "prompt": prompt,
@@ -526,7 +579,9 @@ Follow the specific instructions for this round:
 4. Formatting: Your output must strictly adhere to the requested JSON schema.
 
 # OUTPUT SCHEMA
-{{\"score\": float, \"justification\": string, \"evidence\": [string]}}"""
+Rounds 1 & 3: {{"score": float, "justification": string, "evidence": [string]}}
+Round 2 only: {{"score": float, "justification": string, "evidence": [string], "challenge_target": string_or_null}}
+(challenge_target: exact name of the peer agent you formally challenge, or omit/null if no challenge)"""
 
 
 def build_prompt(
@@ -666,6 +721,7 @@ def run_round(
             justification=data.get("justification", ""),
             evidence=data.get("evidence", []),
             round=round_num,
+            challenge_target=data.get("challenge_target", "") if round_num == 2 else "",
         ))
     return reviews
 
@@ -684,6 +740,17 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None) -> d
     """
     if paper_id is None:
         paper_id = save_paper(paper)
+
+    if _is_stub():
+        print(
+            "\n" + "=" * 60 +
+            "\n  SIMULATED — no LLM model was called" +
+            "\n  Scores are hash-derived and carry no analytical meaning." +
+            "\n  Set RCC_LLM_PROVIDER=ollama or RCC_LLM_PROVIDER=openai" +
+            "\n  (with OPENAI_API_KEY) to run against a real model." +
+            "\n" + "=" * 60,
+            file=sys.stderr,
+        )
 
     print("Deliberating: Round 1 - Initial reviews...")
     r1 = run_round(paper, 1)
@@ -763,12 +830,14 @@ def generate_report(paper: PaperContent, reviews: list[AgentReview], aggregate: 
         "executive_summary": {
             "verdict": verdict,
             "aggregate_score": aggregate,
+            "simulation_mode": _is_stub(),
             "key_strengths": agreements[:3],
             "major_concerns": disagreements[:3],
         },
         "individual_reviews": [
             {"agent": r.agent_name, "criterion": r.criterion, "score": r.score,
-             "justification": r.justification, "evidence": r.evidence}
+             "justification": r.justification, "evidence": r.evidence,
+             "challenge_target": r.challenge_target}
             for r in final_reviews
         ],
         "consensus_dissent": {"agreements": agreements, "disagreements": disagreements},
@@ -1111,8 +1180,75 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
                 self._json(_get_reviews(params["path"][0]))
             elif pth == "/api/deliberation" and "path" in params:
                 self._json(_get_deliberation(params["path"][0]))
+            elif pth == "/api/settings":
+                # Get current config with key redacted for safety
+                c = dict(CFG)
+                if "openai_key" in c:
+                    c["openai_key"] = "[REDACTED]" if c["openai_key"] else ""
+                self._json(c)
             elif pth == "/api/audit":
                 self._json(run_monthly_audit())
+            else:
+                self._404()
+
+        def do_POST(self):
+            global WEIGHTS
+            parsed = urlparse(self.path)
+            pth    = parsed.path
+
+            if pth == "/api/settings":
+                content_len = int(self.headers.get("Content-Length", 0))
+                try:
+                    body = self.rfile.read(content_len)
+                    data = json.loads(body.decode("utf-8"))
+                except Exception as exc:
+                    self._error(400, f"Malformed JSON: {exc}")
+                    return
+
+                new_weights = data.get("weights")
+                if not new_weights:
+                    self._error(400, "Missing 'weights' key in request payload.")
+                    return
+
+                # Validate criteria keys match exactly
+                req_keys = set(WEIGHTS.keys())
+                got_keys = set(new_weights.keys())
+                if req_keys != got_keys:
+                    self._error(400, f"Invalid weights criteria keys. Expected: {list(req_keys)}")
+                    return
+
+                # Validate types and sum
+                try:
+                    parsed_weights = {k: float(v) for k, v in new_weights.items()}
+                except (ValueError, TypeError):
+                    self._error(400, "All weight values must be numbers.")
+                    return
+
+                w_sum = sum(parsed_weights.values())
+                if not (0.999 <= w_sum <= 1.001):
+                    self._error(400, f"Weights must sum to 1.0 (got {w_sum:.4f})")
+                    return
+
+                # Schema validation passed. Persist config file
+                cfg_path = Path("council_config.json")
+                try:
+                    persisted = {}
+                    if cfg_path.exists():
+                        persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    persisted["weights"] = parsed_weights
+                    cfg_path.write_text(json.dumps(persisted, indent=2), encoding="utf-8")
+                    
+                    # Update local state live
+                    CFG["weights"] = parsed_weights
+                    WEIGHTS = parsed_weights
+                except Exception as exc:
+                    self._error(500, f"Could not write configuration file: {exc}")
+                    return
+
+                c = dict(CFG)
+                if "openai_key" in c:
+                    c["openai_key"] = "[REDACTED]" if c["openai_key"] else ""
+                self._json(c)
             else:
                 self._404()
 
@@ -1131,6 +1267,14 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b)))
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b)
+
+        def _error(self, code: int, msg: str):
+            b = json.dumps({"error": msg}, indent=2).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)
 
@@ -1170,7 +1314,14 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
             ).fetchall()
         by_round: dict = {}
         for r in rows:
-            by_round.setdefault(r["round_num"], []).append(dict(r))
+            review_dict = dict(r)
+            # Parse evidence JSON array to avoid double-encoding issues
+            if isinstance(review_dict.get("evidence"), str):
+                try:
+                    review_dict["evidence"] = json.loads(review_dict["evidence"])
+                except Exception:
+                    review_dict["evidence"] = []
+            by_round.setdefault(r["round_num"], []).append(review_dict)
         return {"rounds": by_round}
 
     def _get_deliberation(fp: str) -> dict:
@@ -1186,7 +1337,15 @@ def start_api_server(host: str = "127.0.0.1", port: int = 8080) -> None:
             ).fetchone()
         if not row:
             return {"error": "no deliberation found"}
-        return dict(row)
+        
+        delib_dict = dict(row)
+        # Parse report_json structure to avoid double-encoding inside returned JSON payload
+        if isinstance(delib_dict.get("report_json"), str):
+            try:
+                delib_dict["report_json"] = json.loads(delib_dict["report_json"])
+            except Exception:
+                pass
+        return delib_dict
 
     server = ThreadingHTTPServer((host, port), APIHandler)
     print(f"Dashboard  -> http://{host}:{port}/")
@@ -1223,6 +1382,11 @@ def run_monthly_audit() -> dict:
             ORDER BY d.created_at DESC
             LIMIT 1000
         """).fetchall()
+        
+        # Get count of unique papers processed from deliberations
+        distinct_count = conn.execute(
+            "SELECT COUNT(DISTINCT paper_id) FROM deliberations"
+        ).fetchone()[0]
 
     if not rows:
         return {"status": "no_data", "message": "No completed deliberations to audit."}
@@ -1241,12 +1405,15 @@ def run_monthly_audit() -> dict:
             "max": max(scores),
         }
 
-    return {
+    res = {
         "status": "completed",
-        "papers_audited": len(set(r["paper_id"] for r in rows)),
+        "papers_audited": distinct_count,
         "agent_drift": drift,
         "note": "Compare agent means to human benchmarks. Flag if |diff| > 0.5 consistently.",
     }
+    if _is_stub():
+        res["disclaimer"] = "Scores in stub mode are hash-derived and unsuitable for human-benchmark comparison."
+    return res
 
 
 # ──────────────────────────────────────────────
@@ -1254,7 +1421,7 @@ def run_monthly_audit() -> dict:
 # ──────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage:")
         print("  python council.py <paper.pdf>           # Run full council")
         print("  python council.py --appeal <paper.pdf> \"rebuttal text\"  # Submit appeal")
@@ -1268,7 +1435,7 @@ def main():
     if cmd == "--appeal":
         if len(sys.argv) < 4:
             print("Usage: python council.py --appeal <paper.pdf> \"rebuttal text\"")
-            return
+            sys.exit(1)
         report = submit_appeal(sys.argv[2], sys.argv[3])
         print(json.dumps(report, indent=2))
 
@@ -1279,7 +1446,7 @@ def main():
     elif cmd == "--history":
         if len(sys.argv) < 3:
             print("Usage: python council.py --history <paper>")
-            return
+            sys.exit(1)
         with closing(_db()) as conn:
             rows = conn.execute(
                 "SELECT * FROM reviews "
@@ -1288,7 +1455,7 @@ def main():
             ).fetchall()
         if not rows:
             print("No review history found for that paper.")
-            return
+            sys.exit(1)
         for r in rows:
             print(f"  Round {r['round_num']} | {r['agent_name']} ({r['criterion']}): {r['score']}/5")
 
@@ -1296,7 +1463,15 @@ def main():
         run_api_server()
 
     else:
-        report   = run_council(sys.argv[1])
+        try:
+            report = run_council(sys.argv[1])
+        except FileNotFoundError as exc:
+            print(f"Error: File not found: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            print(f"Error executing council: {exc}", file=sys.stderr)
+            sys.exit(1)
+
         out_path = Path(sys.argv[1]).with_suffix(".report.json")
         out_path.write_text(json.dumps(report, indent=2))
         print(f"Report saved: {out_path}")
