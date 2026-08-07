@@ -39,3 +39,14 @@ jobs:
       run: |
         pip install pytest
         pytest tests/test_units.py tests/test_e2e.py
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20'
+
+    - name: Install and run frontend unit tests
+      run: |
+        cd frontend
+        npm install
+        npm test

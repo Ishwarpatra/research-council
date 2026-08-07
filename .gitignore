@@ -6,3 +6,6 @@ __pycache__/
 council_config.json
 build/
 *.egg-info/
+chroma_db/
+frontend/node_modules/
+frontend/dist/

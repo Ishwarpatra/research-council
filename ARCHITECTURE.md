@@ -107,3 +107,4 @@ To maintain complete architectural resilience without introducing an external ca
 
 3. **ChromaDB Custom Skill Ingestion:**
    - Grounded prior art searches run against a local vector database instance configured with `chromadb.PersistentClient`. This provides semantic search results for the validator agent while bypassing external HTTP latency and rate limits.
+   - **Persistent Storage Mandate:** To guarantee vector embeddings persist across container teardowns, the database directory must be mounted to a persistent volume (e.g. mapping `CHROMA_DB_PATH` to `/app/data/chroma_db`). The storage directory is excluded from version control in `.gitignore` to prevent committing massive binary artifacts.
