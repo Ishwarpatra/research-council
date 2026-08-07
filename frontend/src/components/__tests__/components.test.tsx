@@ -5,6 +5,7 @@ import '@testing-library/jest-dom';
 import { DataPanel } from '../DataPanel';
 import { TokenStream } from '../TokenStream';
 import { ApprovalControls } from '../ApprovalControls';
+import { ToastNotification } from '../ToastNotification';
 
 describe('DataPanel Component', () => {
   it('renders score, verdict and paper path correctly', () => {
@@ -71,5 +72,38 @@ describe('ApprovalControls Component', () => {
 
     fireEvent.click(screen.getByTestId('abort-btn'));
     expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ToastNotification Component', () => {
+  it('renders nothing when no alerts are present', () => {
+    const { container } = render(<ToastNotification alerts={[]} onDismiss={() => {}} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('renders alerts with state-specific details and handles dismiss clicks', () => {
+    const onDismiss = vi.fn();
+    const mockAlerts = [
+      {
+        seq_id: 42,
+        state: 'Open',
+        message: 'Primary LLM failed. Tripped to OPEN.'
+      },
+      {
+        seq_id: 43,
+        state: 'Closed',
+        message: 'LLM connection recovered. Closed.'
+      }
+    ];
+
+    render(<ToastNotification alerts={mockAlerts} onDismiss={onDismiss} />);
+
+    expect(screen.getByText('⚠️ Circuit Breaker: Open')).toBeInTheDocument();
+    expect(screen.getByText('Primary LLM failed. Tripped to OPEN.')).toBeInTheDocument();
+    expect(screen.getByText('⚠️ Circuit Breaker: Closed')).toBeInTheDocument();
+    expect(screen.getByText('LLM connection recovered. Closed.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('toast-close-42'));
+    expect(onDismiss).toHaveBeenCalledWith(42);
   });
 });

@@ -171,6 +171,19 @@ async def lifespan(app: FastAPI):
         # Initialize schema and get persistent database handle
         app.state.db = await db.init_db_async(settings.db_path)
         logger.info("Database connection successfully mounted to app.state.db.")
+
+        # Register circuit breaker listener to broadcast to WebSocket clients
+        async def on_circuit_state_change(new_state: str, message: str):
+            logger.info(f"Broadcasting circuit breaker state change to WS: {new_state}")
+            await broadcast_ws({
+                "type": "system_alert",
+                "alert_type": "circuit_breaker",
+                "state": new_state,
+                "message": message
+            }, app.state.db if hasattr(app, "state") and hasattr(app.state, "db") else None)
+
+        council.primary_breaker.register_callback(on_circuit_state_change)
+        logger.info("Registered circuit breaker listener.")
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
         raise e

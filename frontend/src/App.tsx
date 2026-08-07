@@ -3,6 +3,7 @@ import { useDeliberationStream } from './hooks/useDeliberationStream';
 import { DataPanel } from './components/DataPanel';
 import { TokenStream } from './components/TokenStream';
 import { ApprovalControls } from './components/ApprovalControls';
+import { ToastNotification } from './components/ToastNotification';
 
 interface Paper {
   file_path: string;
@@ -22,7 +23,7 @@ export default function App() {
   const [activePaperId, setActivePaperId] = useState<string>("");
 
   // Connect to the WebSocket token stream hook
-  const { messages, liveTokenBuffer, readyState, isApprovalRequired } = useDeliberationStream(activePaperId);
+  const { messages, liveTokenBuffer, readyState, isApprovalRequired, systemAlerts, dismissAlert } = useDeliberationStream(activePaperId);
 
   useEffect(() => {
     loadPapers();
@@ -185,6 +186,7 @@ export default function App() {
           )}
         </main>
       </div>
+      <ToastNotification alerts={systemAlerts} onDismiss={dismissAlert} />
     </div>
   );
 }

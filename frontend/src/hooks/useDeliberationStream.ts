@@ -6,6 +6,7 @@ export const useDeliberationStream = (paperId: string) => {
     // Falls back gracefully to localhost if environment variables are not injected
     const wsUrl = `${import.meta.env.VITE_API_WSS_URL || 'ws://localhost:8080'}/api/ws/${paperId}`;
     const [messages, setMessages] = useState<any[]>([]);
+    const [systemAlerts, setSystemAlerts] = useState<any[]>([]);
     const [liveTokenBuffer, setLiveTokenBuffer] = useState<string>("");
     const lastSeqId = useRef<number>(0);
     const buffer = useRef<any[]>([]);
@@ -47,14 +48,22 @@ export const useDeliberationStream = (paperId: string) => {
                 setMessages([...buffer.current]);
                 accumulatedTokens.current = "";
                 setLiveTokenBuffer("");
+            } else if (data.type === 'system_alert') {
+                setSystemAlerts(prev => [...prev, data]);
             }
         }
     }, [lastMessage]);
+
+    const dismissAlert = (seqId: number) => {
+        setSystemAlerts(prev => prev.filter(alert => alert.seq_id !== seqId));
+    };
 
     return { 
         messages, 
         liveTokenBuffer, 
         readyState, 
-        isApprovalRequired: messages[messages.length - 1]?.type === 'approval_required' 
+        isApprovalRequired: messages[messages.length - 1]?.type === 'approval_required',
+        systemAlerts,
+        dismissAlert
     };
 };

@@ -29,5 +29,7 @@ describe('useDeliberationStream Hook', () => {
     expect(result.current.messages).toEqual([]);
     expect(result.current.liveTokenBuffer).toBe("");
     expect(result.current.isApprovalRequired).toBe(false);
+    expect(result.current.systemAlerts).toEqual([]);
+    expect(typeof result.current.dismissAlert).toBe('function');
   });
 });
