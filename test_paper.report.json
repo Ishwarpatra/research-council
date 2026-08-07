@@ -1,10 +1,10 @@
 {
   "executive_summary": {
     "verdict": "Minor Revisions",
-    "aggregate_score": 3.87,
+    "aggregate_score": 4.05,
     "key_strengths": [
-      "Clarity & Presentation: strong (4.8/5)",
-      "Ethics & Integrity: strong (4.2/5)"
+      "Clarity & Presentation: strong (4.9/5)",
+      "Methodology Rigor: strong (4.8/5)"
     ],
     "major_concerns": []
   },
@@ -12,8 +12,8 @@
     {
       "agent": "Skeptical Reviewer",
       "criterion": "Clarity & Presentation",
-      "score": 4.8,
-      "justification": "[Orca-2] Analysis complete. Score derived from content hash f53b61ca.",
+      "score": 4.9,
+      "justification": "[Orca-2] Stub analysis. Score derived from content hash 300739f7.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
@@ -22,8 +22,8 @@
     {
       "agent": "Methodologist",
       "criterion": "Methodology Rigor",
-      "score": 3.6,
-      "justification": "[Phi-4] Analysis complete. Score derived from content hash f03ea3ce.",
+      "score": 4.8,
+      "justification": "[Phi-4] Stub analysis. Score derived from content hash 2bc6ce06.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
@@ -32,8 +32,8 @@
     {
       "agent": "Domain Expert",
       "criterion": "Novelty & Significance",
-      "score": 3.5,
-      "justification": "[Mistral-7B] Analysis complete. Score derived from content hash 51c4bf11.",
+      "score": 3.4,
+      "justification": "[Mistral-7B] Stub analysis. Score derived from content hash 8447b8c0.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
@@ -42,8 +42,8 @@
     {
       "agent": "Ethics Officer",
       "criterion": "Ethics & Integrity",
-      "score": 4.2,
-      "justification": "[Llama-3.2] Analysis complete. Score derived from content hash e9537608.",
+      "score": 3.4,
+      "justification": "[Llama-3.2] Stub analysis. Score derived from content hash e9fb5f50.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
@@ -52,8 +52,8 @@
     {
       "agent": "Industry Translator",
       "criterion": "Practical Impact",
-      "score": 3.1,
-      "justification": "[Phi-3] Analysis complete. Score derived from content hash 25cce899.",
+      "score": 3.4,
+      "justification": "[Phi-3] Stub analysis. Score derived from content hash 32822048.",
       "evidence": [
         "Extracted text segment 1",
         "Extracted text segment 2"
@@ -62,16 +62,18 @@
   ],
   "consensus_dissent": {
     "agreements": [
-      "Clarity & Presentation: strong (4.8/5)",
-      "Ethics & Integrity: strong (4.2/5)"
+      "Clarity & Presentation: strong (4.9/5)",
+      "Methodology Rigor: strong (4.8/5)"
     ],
     "disagreements": []
   },
   "actionable_feedback": {
     "prioritized_revisions": [
-      "Improve Practical Impact (score: 3.1/5)"
+      "Improve Novelty & Significance (score: 3.4/5)",
+      "Improve Ethics & Integrity (score: 3.4/5)",
+      "Improve Practical Impact (score: 3.4/5)"
     ],
     "rebuttal_template": "Authors may respond to each criterion above with evidence.",
-    "decision_path": "Current: Minor Revisions (3.87/5). Address major concerns to improve."
+    "decision_path": "Current: Minor Revisions (4.05/5). Address major concerns to improve."
   }
 }
