@@ -110,4 +110,4 @@ Mount durable storage for:
 - `DB_PATH` (SQLite)
 - `CHROMA_DB_PATH` (vector index; default `/app/data/chroma_db` in Docker)
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [README.md](README.md).
+See [ARCHITECTURE.md](../architecture/ARCHITECTURE.md) and [README.md](../../README.md).

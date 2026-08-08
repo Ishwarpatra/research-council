@@ -19,5 +19,5 @@ frontend/dist
 *.zip
 *.tar.gz
 *.7z
-Function_Documentation.*
+docs/archive/Function_Documentation.*
 research_council.egg-info

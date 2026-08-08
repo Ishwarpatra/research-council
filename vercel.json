@@ -5,7 +5,7 @@
   "framework": "vite",
   "functions": {
     "api/**/*.py": {
-      "excludeFiles": "{frontend/**,node_modules/**,Function_Documentation*,chroma_db/**,.venv/**,tests/**,uploads/**,build/**,dist/**}"
+      "excludeFiles": "{frontend/**,node_modules/**,docs/archive/Function_Documentation*,chroma_db/**,.venv/**,tests/**,uploads/**,build/**,dist/**}"
     }
   },
   "rewrites": [

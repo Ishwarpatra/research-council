@@ -30,7 +30,7 @@ This document describes the stack components, database schemas, and data flow of
 
 - **Backend Framework:** FastAPI running on Uvicorn ASGI server with non-blocking async event loop.
 - **Frontend Portal:** React 18 + Vite + TypeScript (`frontend/`). **Landing** gates entry; **AppShell** uses TopNav (brand / notifications / Settings) and SideNav (sole workspace navigator: Research, Council, Archive, Audit, Lab, Docs). Portal enter/leave uses History API so browser Back returns to landing. Features: WebSocket token streaming, Settings weight sliders, review timelines, prior-art cards, upload + HITL approve/abort, Docs (bundled ADK), Audit/Lab views.
-- **API ports:** Docker / `council.py --api` default **8080**; local Windows stub pairing with the Vite app typically uses **8090** (see [SETUP.md](SETUP.md)).
+- **API ports:** Docker / `council.py --api` default **8080**; local Windows stub pairing with the Vite app typically uses **8090** (see [SETUP.md](../guides/SETUP.md)).
 - **Database Engine:** Dual-layer SQLite 3 architecture using `sqlite3` for synchronous deliberation processing and `aiosqlite` for asynchronous WebSocket frame logging (`websocket_frames`) and sequence replay.
 - **Vector Search (RAG):** ChromaDB persistent vector database for semantic prior art claim verification when consensus scores drop below threshold.
 - **Resilience:** Circuit Breaker pattern with automatic primary-to-fallback provider failover and real-time state change notifications.

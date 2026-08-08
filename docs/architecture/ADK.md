@@ -5,7 +5,7 @@
 | **System** | Research Consensus Council (RCC) |
 | **ADK version** | 1.0.0 |
 | **Status** | As-built (matches runtime code) |
-| **Related docs** | [ARCHITECTURE.md](ARCHITECTURE.md), [AGENTS.md](AGENTS.md), [PRD.md](PRD.md), [README.md](README.md), [SETUP.md](SETUP.md) |
+| **Related docs** | [ARCHITECTURE.md](ARCHITECTURE.md), [AGENTS.md](../../AGENTS.md), [PRD.md](../guides/PRD.md), [README.md](../../README.md), [SETUP.md](../guides/SETUP.md) |
 
 ## 1. Purpose and scope
 
@@ -37,7 +37,7 @@ API (api.py / Uvicorn) ──┼──► same engine in thread pool + HITL even
 | Surface | Entry | Notes |
 |---|---|---|
 | CLI | `python council.py <paper>` | Optional stdin HITL; `--non-interactive` / `RCC_NON_INTERACTIVE=true` skips prompts |
-| API | `python council.py --api` | FastAPI default `:8080`; local UI pairing often uses `:8090` (see [SETUP.md](SETUP.md)); deliberation via `POST /api/deliberate` |
+| API | `python council.py --api` | FastAPI default `:8080`; local UI pairing often uses `:8090` (see [SETUP.md](../guides/SETUP.md)); deliberation via `POST /api/deliberate` |
 | Portal | `frontend/` Vite React SPA | Landing → workspace; SideNav owns views; HITL via approve/abort APIs |
 | Config | `config.settings` / env / optional `council_config.json` | Providers: `stub` (default), `ollama`, `openai` |
 
@@ -56,7 +56,7 @@ In-portal ADK copy is served from `frontend/public/ADK.md` (Docs view).
 
 ## 4. Agent catalog
 
-Personas and responsibilities are detailed in [AGENTS.md](AGENTS.md). Canonical runtime definitions live in `AGENTS` inside `council.py`.
+Personas and responsibilities are detailed in [AGENTS.md](../../AGENTS.md). Canonical runtime definitions live in `AGENTS` inside `council.py`.
 
 | Agent | Persona model | Criterion | Weight |
 |---|---|---|---|
@@ -90,7 +90,7 @@ Provider model maps (`ollama_model_map` / `openai_model_map`) translate persona 
 - **Query text:** `claims` else `abstract` else first 500 chars of `full_text`.
 - **Return:** `{ status, query, findings[{ content, source, confidence_score }], retrieval? }` or error shape with empty findings.
 - **Backends:** `settings.retrieval_backend` = `chroma` | `jina` | `hybrid` (default). Hybrid uses Jina embeddings + rerank when `JINA_API_KEY` is set; otherwise Chroma text query only.
-- **LLM tool schema:** see [AGENTS.md](AGENTS.md). Engine invokes the validator directly (not model tool-calling).
+- **LLM tool schema:** see [AGENTS.md](../../AGENTS.md). Engine invokes the validator directly (not model tool-calling).
 
 ### 5.4 Skill tree (`skills.run_skill_tree`)
 
@@ -103,7 +103,7 @@ Hierarchical audit/review skills. Envelope: `{ status, skill_id, findings, evide
 
 **Agent consumption:** After the review tree runs, `_format_skill_context` injects a `# SKILL CONTEXT (Jenni-style claim grounding)` block into every round’s `build_prompt` so agents can cite ungrounded/supported claims. HITL gates after R1/R2 are unchanged.
 
-**Agent-kit registry:** [`skills/agent_tools.py`](skills/agent_tools.py) — `TOOL_SCHEMAS` + `dispatch_tool` for `query_claim_grounding` and `query_prior_art`. List via `GET /api/skills/tools`. Claim API: `POST /api/skills/claim_grounding?path=`. Schemas are registered for agents; there is **no multi-turn LLM tool-calling loop yet**.
+**Agent-kit registry:** [`skills/agent_tools.py`](../../skills/agent_tools.py) — `TOOL_SCHEMAS` + `dispatch_tool` for `query_claim_grounding` and `query_prior_art`. List via `GET /api/skills/tools`. Claim API: `POST /api/skills/claim_grounding?path=`. Schemas are registered for agents; there is **no multi-turn LLM tool-calling loop yet**.
 
 **Jenni.ai:** no public API — claim_grounding mirrors Jenni-style claim confidence (evidence spans from **methods/results only** / ungrounded flags). Optional manual export of report JSON into Jenni Library.
 

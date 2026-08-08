@@ -99,6 +99,6 @@ Prior-art schema (`query_prior_art`) is also registered there. These schemas are
 
 ## Operator UI (frontend)
 
-- React 18 + Vite SPA in `frontend/`. Local API pairing defaults to port **8090** ([SETUP.md](SETUP.md)).
+- React 18 + Vite SPA in `frontend/`. Local API pairing defaults to port **8090** ([docs/guides/SETUP.md](docs/guides/SETUP.md)).
 - Landing page gates the portal; **SideNav** is the only workspace view navigator; **TopNav** is brand + notifications + Settings.
 - Browser Back and **Leave portal** restore the landing page via the History API.

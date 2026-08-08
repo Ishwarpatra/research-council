@@ -5,15 +5,15 @@ Multi-agent deliberation consensus system with persistence, real LLM hooks, appe
 [WEBSITE LINK](https://research-council-mocha.vercel.app/#ethics)
 ## Documentation
 
-- **[SETUP.md](SETUP.md)** — Install, ports (8090 local / 8080 Docker), frontend + portal UX
-- **[ADK.md](ADK.md)** — Agent Development Kit (agent catalog, skill tree, tools, orchestration, contracts, HITL)
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Stack, database schema, UI shell, deployment constraints
+- **[docs/guides/SETUP.md](docs/guides/SETUP.md)** — Install, ports (8090 local / 8080 Docker), frontend + portal UX
+- **[docs/architecture/ADK.md](docs/architecture/ADK.md)** — Agent Development Kit (agent catalog, skill tree, tools, orchestration, contracts, HITL)
+- [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) — Stack, database schema, UI shell, deployment constraints
 - [AGENTS.md](AGENTS.md) — Agent personas, skills, and tool schemas
-- [PRD.md](PRD.md) — Product requirements and roadmap
+- [docs/guides/PRD.md](docs/guides/PRD.md) — Product requirements and roadmap
 
 ## Setup & Ingestion
 
-Full steps: **[SETUP.md](SETUP.md)**. Short version:
+Full steps: **[docs/guides/SETUP.md](docs/guides/SETUP.md)**. Short version:
 
 1. `pip install -r requirements.txt` then copy `.env.example` → `.env`.
 2. Start API on **8090** locally (recommended on Windows):
@@ -61,7 +61,7 @@ Environment knobs (see `.env.example`):
   ```bash
   python council.py --api
   ```
-  Default bind: `http://127.0.0.1:8080/`. For local UI pairing, prefer **8090** (see [SETUP.md](SETUP.md)).
+  Default bind: `http://127.0.0.1:8080/`. For local UI pairing, prefer **8090** (see [docs/guides/SETUP.md](docs/guides/SETUP.md)).
 
 ### Portal (React)
 
