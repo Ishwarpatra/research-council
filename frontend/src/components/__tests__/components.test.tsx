@@ -209,7 +209,7 @@ describe('VerdictPanel', () => {
     const blob = blobs[0];
     expect(blob).toBeInstanceOf(Blob);
     expect(blob.type).toMatch(/^text\/plain/);
-    const anchor = click.mock.instances[0] as HTMLAnchorElement;
+    const anchor = click.mock.instances[0] as unknown as HTMLAnchorElement;
     expect(anchor.download).toBe('rcc-transcript.txt');
 
     const text = formatTranscriptText(reportJson, { verdict: 'Minor Revisions', aggregateScore: 3.8 });
