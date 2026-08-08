@@ -2,6 +2,7 @@
 
 Multi-agent deliberation consensus system with persistence, real LLM hooks, appeals processing, skill-tree audit/review, and a React portal (landing + workspace).
 
+[WEBSITE LINK](https://research-council-mocha.vercel.app/#ethics)
 ## Documentation
 
 - **[SETUP.md](SETUP.md)** — Install, ports (8090 local / 8080 Docker), frontend + portal UX
