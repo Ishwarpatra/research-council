@@ -1,0 +1,26 @@
+TOOLS DOCUMENTATION
+System: Research Consensus Council
+
+1. CONTENT EXTRACTION TOOL
+- Purpose: To ingest standard academic formatting and separate text into the required analytical chunks.
+- Usage: `PDFExtractorTool.parse(file)`
+- Sub-features: Table extraction, citation parsing.
+
+2. SCORING MATRIX CALCULATOR
+- Purpose: A deterministic tool used by the Deliberation Engine to ensure strict adherence to the weighted scoring logic without LLM hallucination.
+- Usage: `ScoreCalculator.compute(weights_dict, scores_dict)`
+
+3. REPORT GENERATOR TOOL
+- Purpose: Structures the unstructured debate data into a rigid output format.
+- Sections Generated:
+  * Executive Summary (Overall recommendation, aggregate score, key strengths, major concerns).
+  * Individual Agent Reviews (Agent score 1-5, written justification, specific recommendations, evidence cited).
+  * Consensus & Dissent (Points of agreement, major disagreements, minority opinions).
+  * Actionable Feedback (Prioritized revision list, rebuttal template, decision path).
+
+4. AUDIT & QUALITY CONTROL TOOL
+- Purpose: Monthly auditing tool to compare agent consensus against historical human reviews to detect drift or bias in scoring.
+- Usage: `QATool.run_monthly_audit(historical_dataset)`
+
+5. APPEAL PROCESSOR
+- Purpose: Handles author rebuttals, triggers a re-deliberation of the council considering new evidence, and provides a final human escalation pathway.

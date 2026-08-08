@@ -1,4 +1,3 @@
-import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
@@ -20,7 +19,7 @@ describe('DataPanel Component', () => {
 
     expect(screen.getByText('4.50')).toBeInTheDocument();
     expect(screen.getByText('/5.0')).toBeInTheDocument();
-    expect(screen.getByText('Strong Accept')).toBeInTheDocument();
+    expect(screen.getAllByText('Strong Accept').length).toBeGreaterThan(0);
     expect(screen.getByText('tests/fixtures/test_paper.txt')).toBeInTheDocument();
     expect(screen.getByText('This is a test abstract.')).toBeInTheDocument();
   });
@@ -70,7 +69,11 @@ describe('ApprovalControls Component', () => {
     fireEvent.click(screen.getByTestId('approve-btn'));
     expect(onApprove).toHaveBeenCalledTimes(1);
 
+    // Abort button should toggle confirmation prompt first
     fireEvent.click(screen.getByTestId('abort-btn'));
+    expect(screen.getByText('Confirm abort?')).toBeInTheDocument();
+    
+    fireEvent.click(screen.getByTestId('confirm-abort-btn'));
     expect(onAbort).toHaveBeenCalledTimes(1);
   });
 });
@@ -100,7 +103,7 @@ describe('ToastNotification Component', () => {
 
     expect(screen.getByText('⚠️ Circuit Breaker: Open')).toBeInTheDocument();
     expect(screen.getByText('Primary LLM failed. Tripped to OPEN.')).toBeInTheDocument();
-    expect(screen.getByText('⚠️ Circuit Breaker: Closed')).toBeInTheDocument();
+    expect(screen.getByText('ℹ️ Circuit Breaker: Closed')).toBeInTheDocument();
     expect(screen.getByText('LLM connection recovered. Closed.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('toast-close-42'));

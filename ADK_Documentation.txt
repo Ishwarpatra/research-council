@@ -1,0 +1,20 @@
+AGENT DEVELOPMENT KIT (ADK) DOCUMENTATION
+System: Research Consensus Council
+
+1. ARCHITECTURE OVERVIEW
+The ADK provides the framework for instantiating, orchestrating, and managing the multi-agent council. It handles message passing, context preservation, and state management throughout the deliberation process.
+
+2. MULTI-ROUND DEBATE PROTOCOL
+The ADK manages the deliberation phase through a structured 3-round protocol:
+- Round 1 (Initial Reviews): Each agent reads the extracted content independently and generates an initial review and score.
+- Round 2 (Respond to Critiques): Agents review each other's initial assessments. They can challenge scores (e.g., Skeptical Reviewer challenging the Methodologist's view on statistical validity).
+- Round 3 (Final Positions): Agents finalize their scores and justifications based on the debate. Context is preserved across all rounds via the central Context Manager.
+
+3. TRANSPARENCY & STATE LOGGING
+- Full Review Chain: The ADK logs every prompt and response payload.
+- Agent Reasoning Log: Internal Chain-of-Thought (CoT) for each agent is recorded for auditability.
+- Vote Distribution: The exact matrix of criteria, weight, and assigned score is saved to the final state object.
+
+4. QUALITY CONTROL & TUNING
+- Weight Tuning Engine: Allows administrators to adjust the 20/25/20/20/15 weighting scheme.
+- Bias Detection: Intercepts agent outputs to monitor for overly harsh or systemic bias against specific research topics.

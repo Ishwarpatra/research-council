@@ -64,7 +64,7 @@ class CircuitBreaker:
             task = asyncio.create_task(self._dispatch_webhook_alert(msg))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
-            
+
             await self._notify_callbacks("Open", msg)
 
     async def get_state(self):

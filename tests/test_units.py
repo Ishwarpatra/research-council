@@ -92,5 +92,35 @@ class TestConsensusCouncilUnits(unittest.TestCase):
 
         asyncio.run(run_async_test())
 
+    def test_prior_art_validator_query(self):
+        """Verify PriorArtValidator returns properly structured query result."""
+        from skills.prior_art_validator import PriorArtValidator
+        validator = PriorArtValidator()
+        res = validator.query_prior_art("quantum computing methodology", n_results=2)
+        self.assertIn("status", res)
+        self.assertIn("findings", res)
+
+    def test_db_appeals_and_frame_cleanup(self):
+        """Verify DB appeal insertion/retrieval and async websocket frame cleanup."""
+        import db
+        db.init_db()
+        paper_id = db.save_paper("tests/fixtures/test_paper.txt", "hash123", "abstract", "methods", "results", "claims", "full")
+        appeal_id = db.insert_appeal(paper_id, "Rebuttal claim")
+        db.update_appeal_verdict(appeal_id, "Accept")
+
+        appeals = db.get_appeals_by_paper(paper_id)
+        self.assertTrue(len(appeals) > 0)
+        self.assertEqual(appeals[0]["new_verdict"], "Accept")
+
+        async def test_async_cleanup():
+            app_db = await db.init_db_async("test_council.db")
+            await db.log_frame(app_db, paper_id, 1, '{"type": "token"}')
+            frames = await db.get_websocket_frames("test_council.db", paper_id, 0)
+            self.assertTrue(len(frames) >= 1)
+            await db.cleanup_websocket_frames(app_db, paper_id, max_age_seconds=0)
+            await app_db.close()
+
+        asyncio.run(test_async_cleanup())
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useDeliberationStream } from './hooks/useDeliberationStream';
 import { DataPanel } from './components/DataPanel';
 import { TokenStream } from './components/TokenStream';
 import { ApprovalControls } from './components/ApprovalControls';
-import { ToastNotification } from './components/ToastNotification';
+import { ToastNotification, NotificationBell } from './components/ToastNotification';
+import { SettingsPanel } from './components/SettingsPanel';
 
 interface Paper {
   file_path: string;
@@ -17,13 +18,15 @@ export default function App() {
   const [paperDetails, setPaperDetails] = useState<any>(null);
   const [reviews, setReviews] = useState<any>(null);
   const [delibResult, setDelibResult] = useState<any>(null);
+  const [appeals, setAppeals] = useState<any[]>([]);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   
   // Input form
   const [paperPathInput, setPaperPathInput] = useState("");
   const [activePaperId, setActivePaperId] = useState<string>("");
 
   // Connect to the WebSocket token stream hook
-  const { messages, liveTokenBuffer, readyState, isApprovalRequired, systemAlerts, dismissAlert } = useDeliberationStream(activePaperId);
+  const { liveTokenBuffer, isApprovalRequired, currentRoundNum, systemAlerts, dismissAlert } = useDeliberationStream(activePaperId);
 
   useEffect(() => {
     loadPapers();
@@ -43,16 +46,34 @@ export default function App() {
     setSelectedPaper(path);
     const ep = encodeURIComponent(path);
     try {
-      const [detailsRes, reviewsRes, delibRes] = await Promise.all([
+      const [detailsRes, reviewsRes, delibRes, appealsRes] = await Promise.all([
         fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/paper?path=${ep}`),
         fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/reviews?path=${ep}`),
-        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/deliberation?path=${ep}`)
+        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/deliberation?path=${ep}`),
+        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/appeals?path=${ep}`).catch(() => ({ json: async () => [] }))
       ]);
       setPaperDetails(await detailsRes.json());
       setReviews(await reviewsRes.json());
       setDelibResult(await delibRes.json());
+      setAppeals(await appealsRes.json());
     } catch (e) {
       console.error("Failed to retrieve paper details", e);
+    }
+  };
+
+  const refreshAppeals = async () => {
+    if (selectedPaper) {
+      const ep = encodeURIComponent(selectedPaper);
+      try {
+        const [delibRes, appealsRes] = await Promise.all([
+          fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/deliberation?path=${ep}`),
+          fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/appeals?path=${ep}`)
+        ]);
+        setDelibResult(await delibRes.json());
+        setAppeals(await appealsRes.json());
+      } catch (e) {
+        console.error("Failed to refresh appeals", e);
+      }
     }
   };
 
@@ -95,6 +116,22 @@ export default function App() {
         <span style={{ fontSize: '1.25rem' }}>⚖️</span>
         <h1 style={{ fontSize: '1.05rem', fontWeight: 600 }}>Research Consensus Council Dashboard</h1>
         <span style={{ background: '#7c6ff7', color: '#fff', borderRadius: '20px', padding: '2px 9px', fontSize: '0.68rem', fontWeight: 700 }}>REACT Client</span>
+
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <NotificationBell alerts={systemAlerts} />
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            style={{
+              background: '#1e2235', border: '1px solid #2b3050', borderRadius: '20px',
+              padding: '6px 14px', color: '#e4e8f1', fontSize: '0.8rem', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '6px'
+            }}
+            data-testid="settings-btn"
+          >
+            <span>⚙️</span>
+            <span>Settings</span>
+          </button>
+        </div>
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -147,7 +184,7 @@ export default function App() {
               {/* Action Pause sign-off controls */}
               <ApprovalControls
                 isApprovalRequired={isApprovalRequired}
-                roundNum={1}
+                roundNum={currentRoundNum}
                 onApprove={approveRound}
                 onAbort={abortDeliberation}
               />
@@ -176,6 +213,10 @@ export default function App() {
                 verdict={delibResult?.verdict || 'Processing'}
                 paperPath={selectedPaper}
                 abstractText={paperDetails?.abstract}
+                reportJson={delibResult?.report_json}
+                reviews={reviews}
+                appeals={appeals}
+                onRefreshAppeals={refreshAppeals}
               />
             </div>
           ) : (
@@ -187,6 +228,7 @@ export default function App() {
         </main>
       </div>
       <ToastNotification alerts={systemAlerts} onDismiss={dismissAlert} />
+      <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
     </div>
   );
 }

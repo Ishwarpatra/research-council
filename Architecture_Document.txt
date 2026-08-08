@@ -1,0 +1,23 @@
+ARCHITECTURE DOCUMENT
+System: Research Consensus Council
+
+1. HIGH-LEVEL WORKFLOW
+- Input Module: Accepts Research Paper (PDF/Text).
+- Content Extractor: Extracts Abstract, methods, results, and claims.
+- Council Activation: Activates the council of 5 reviewer agents based on the extracted content.
+
+2. AGENT MODULES (The Council)
+- Skeptical Reviewer: Challenges claims, finds weaknesses.
+- Method Evaluator: Rigor assessment, validates design.
+- Domain Expert: Field knowledge, novelty check.
+- Ethics Officer: IRB compliance, bias detection.
+- Industry Translator: Practical impact, applicability.
+
+3. DELIBERATION ENGINE
+- Scoring Phase: Each reviewer scores the paper on quality, clarity, impact, ethics, and novelty.
+- Debate Phase: Agents debate findings, identify limitations, and suggest improvements.
+- Report Compilation: The engine generates a detailed feedback report combining all agent inputs.
+
+4. CONSENSUS VERDICT & OUTPUT
+- Output Decisions: The system outputs a final verdict of Accept, Minor Revisions, Major Revisions, or Reject.
+- Artifacts: The final output includes detailed reasoning, evidence, and recommendations.

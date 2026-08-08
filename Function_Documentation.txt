@@ -1,0 +1,26 @@
+FUNCTION DOCUMENTATION
+System: Research Consensus Council
+
+1. extract_content(file_path: str) -> dict
+- Description: Parses the uploaded PDF/Text document and segments it into logical sections.
+- Returns: A dictionary with keys ['abstract', 'methods', 'results', 'claims', 'full_text'].
+
+2. activate_council(paper_data: dict) -> list[Agent]
+- Description: Initializes the 5 specialized LLMs (Orca-2, Phi-4, Mistral-7B, Llama-3.2, Phi-3) and loads the paper_data into their context windows.
+
+3. run_deliberation_round(agents: list, round_number: int, context: list) -> list
+- Description: Orchestrates a single round of debate.
+- Logic: Depending on round_number (1, 2, or 3), agents either perform initial review, debate peers, or finalize scores.
+
+4. calculate_final_score(agent_scores: dict) -> float
+- Description: Computes the weighted aggregate score.
+- Formula: 
+  (Clarity * 0.20) + (Methodology * 0.25) + (Novelty * 0.20) + (Ethics * 0.20) + (Impact * 0.15)
+- Returns: A float between 1.0 and 5.0.
+
+5. determine_verdict(aggregate_score: float) -> str
+- Description: Maps the aggregate score to a final decision.
+- Returns: 'Accept' (4.5-5.0), 'Minor Revisions' (3.5-4.4), 'Major Revisions' (2.5-3.4), or 'Reject' (<2.5).
+
+6. generate_output_report(verdict: str, agent_reviews: dict, aggregate_score: float) -> dict
+- Description: Compiles the Executive Summary, Individual Agent Reviews, Consensus & Dissent records, and Actionable Feedback into the final output schema.

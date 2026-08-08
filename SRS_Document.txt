@@ -1,0 +1,43 @@
+SOFTWARE REQUIREMENTS SPECIFICATION (SRS)
+Project: Research Consensus Council
+Version: 1.0
+
+1. INTRODUCTION
+1.1 Purpose
+The Research Consensus Council is an automated multi-agent AI system designed to review research papers, deliberate on their quality, and produce a consensus verdict (Accept, Minor Revisions, Major Revisions, or Reject) along with a detailed feedback report.
+
+1.2 Scope
+The system will accept Research Papers (PDF/Text) as input, extract necessary content (abstract, methods, results, claims), and activate a council of 5 specialized reviewer agents. These agents will engage in a multi-round debate, score the paper across distinct criteria, and output an aggregate decision.
+
+2. OVERALL DESCRIPTION
+2.1 System Architecture
+- Input Module: Accepts PDF/Text research papers.
+- Content Extractor: Extracts and structures Abstract, Methods, Results, and Claims.
+- Agent Council: Activates 5 reviewer agents (Skeptical Reviewer, Method Evaluator, Domain Expert, Ethics Officer, Industry Translator).
+- Deliberation Engine: Orchestrates debate, score generation, and limitation identification.
+- Output Generator: Aggregates scores and compiles the detailed feedback report.
+
+2.2 Scoring & Decision Logic
+The final verdict is based on a weighted 1-5 scale:
+- Clarity & Presentation (20%)
+- Methodology Rigor (25%)
+- Novelty & Significance (20%)
+- Ethics & Integrity (20%)
+- Practical Impact (15%)
+
+Verdict Thresholds:
+- 4.5 - 5.0: Accept
+- 3.5 - 4.4: Minor Revisions
+- 2.5 - 3.4: Major Revisions
+- < 2.5: Reject
+
+3. FUNCTIONAL REQUIREMENTS
+- FR1: The system shall parse PDF and Text files.
+- FR2: The system shall instantiate 5 distinct LLM-based agents.
+- FR3: The system shall conduct multi-round debates (Initial reviews, Responses to critiques, Final positions).
+- FR4: The system shall calculate an aggregate score using the predefined weighting matrix.
+- FR5: The system shall support Appeals and Rebuttals from authors.
+
+4. NON-FUNCTIONAL REQUIREMENTS
+- NFR1 (Transparency): Full review chain and agent reasoning must be logged and visible.
+- NFR2 (Quality Control): System must support bias detection in scoring and allow for monthly accuracy audits.

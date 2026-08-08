@@ -60,6 +60,14 @@ class TestConsensusCouncilE2E(unittest.TestCase):
         err_msg = json.loads(ctx.exception.read().decode())
         self.assertIn("error", err_msg)
 
+    def test_api_prior_art_get(self):
+        """Verify GET /api/prior_art endpoint executes semantic search."""
+        req = urllib.request.Request("http://127.0.0.1:8081/api/prior_art?query=test")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            self.assertIn("status", data)
+            self.assertIn("findings", data)
+
     def test_playwright_dashboard_navigation(self):
         """Playwright test: navigate dashboard, check visual headings."""
         if not HAS_PLAYWRIGHT:

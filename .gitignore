@@ -1,4 +1,6 @@
 council.db
+*.db
+.env
 council_notifications.log
 *.report.json
 __pycache__/
@@ -9,3 +11,4 @@ build/
 chroma_db/
 frontend/node_modules/
 frontend/dist/
+

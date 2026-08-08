@@ -199,6 +199,14 @@ def update_appeal_verdict(appeal_id: int, verdict: str) -> None:
         )
         conn.commit()
 
+def get_appeals_by_paper(paper_id: int) -> list:
+    with closing(_db()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM appeals WHERE paper_id = ? ORDER BY created_at DESC",
+            (paper_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 
 # ──────────────────────────────────────────────
 # Async WebSockets State Storage (aiosqlite)
@@ -215,6 +223,9 @@ async def init_db_async(db_path: str) -> aiosqlite.Connection:
             payload TEXT,
             created_at REAL
         )
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ws_frames ON websocket_frames(paper_id, seq_id)
     """)
     await db.commit()
     return db
@@ -236,3 +247,14 @@ async def get_websocket_frames(db_path: str, paper_id: int, since_seq: int = 0) 
         ) as cursor:
             rows = await cursor.fetchall()
             return [json.loads(r[0]) for r in rows]
+
+async def cleanup_websocket_frames(db: aiosqlite.Connection, paper_id: int, max_age_seconds: float = 86400):
+    """Delete websocket frames older than max_age_seconds for a given paper."""
+    import time
+    cutoff = time.time() - max_age_seconds
+    await db.execute(
+        "DELETE FROM websocket_frames WHERE paper_id = ? AND created_at < ?",
+        (paper_id, cutoff)
+    )
+    await db.commit()
+

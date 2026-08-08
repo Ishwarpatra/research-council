@@ -7,28 +7,31 @@ This document describes the stack components, database schemas, and data flow of
 ```
    ┌────────────────────────────────────────────────────────┐
    │                  Web User Interface                    │
-   │      (HTML5 / CSS / Vanilla JS dark-mode Dashboard)      │
+   │      (React 18 + Vite + TypeScript Client Dashboard)    │
    └───────────────────────────┬────────────────────────────┘
-                               │ HTTP API
+                               │ HTTP REST & WebSocket (ws://)
                                ▼
    ┌────────────────────────────────────────────────────────┐
-   │            ThreadingHTTPServer API Gateway             │
-   │      - Non-blocking concurrent request routing         │
-   │      - /api/papers, /api/reviews, /api/settings        │
+   │            FastAPI Microservice (Uvicorn)              │
+   │      - Async REST API & WebSocket token streaming      │
+   │      - CircuitBreaker resilience & fallback routing    │
+   │      - Human-in-the-Loop event synchronization         │
    └───────────────────────────┬────────────────────────────┘
-                               │ SQLite DB / File IO
+                               │ aiosqlite / sqlite3
                                ▼
    ┌────────────────────────────────────────────────────────┐
-   │           Deliberation Engine (SQLite DB)              │
+   │      Deliberation Engine & Vector RAG (ChromaDB)       │
    │      - 3-round multi-agent council processor           │
-   │      - Dynamic environment settings & weight tuning    │
+   │      - PriorArtValidator RAG semantic retrieval        │
+   │      - Weighted scoring matrix & appeal processing     │
    └────────────────────────────────────────────────────────┘
 ```
 
-- **Backend core:** Python 3.13 standard library.
-- **Concurrency:** `ThreadingHTTPServer` prevents API calls (e.g. settings updates, deliberation queries) from blocking while long LLM processing tasks execute in separate threads.
-- **Database:** SQLite 3. File-backed data repository with automatic table schema configuration and column migration.
-- **Frontend Dashboard:** Dark-mode dashboard built with pure HTML, modern CSS variables (glassmorphism accents), and native JavaScript APIs. Fetches endpoints continuously.
+- **Backend Framework:** FastAPI running on Uvicorn ASGI server with non-blocking async event loop.
+- **Frontend Dashboard:** Modern React 18 single-page application built with Vite and TypeScript (located in `frontend/`). Features real-time WebSocket token streaming, interactive Settings weight sliders, review chain timelines, prior art reference cards, and author appeal submission workflows.
+- **Database Engine:** Dual-layer SQLite 3 architecture using `sqlite3` for synchronous deliberation processing and `aiosqlite` for asynchronous WebSocket frame logging (`websocket_frames`) and sequence replay.
+- **Vector Search (RAG):** ChromaDB persistent vector database for semantic prior art claim verification when consensus scores drop below threshold.
+- **Resilience:** Circuit Breaker pattern with automatic primary-to-fallback provider failover and real-time state change notifications.
 
 ## Database Model & Schema
 

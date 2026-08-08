@@ -138,11 +138,25 @@ async def background_deliberation_task(paper_path: str, app_db):
         )
         active_deliberation["status"] = "completed"
         logger.info(f"Deliberation completed for {paper_path}.")
+        if app_db:
+            try:
+                pid = db.get_paper_id_by_path(paper_path)
+                if pid:
+                    await db.cleanup_websocket_frames(app_db, pid)
+            except Exception as clean_err:
+                logger.warning(f"Frame cleanup issue: {clean_err}")
         await broadcast_ws({
             "type": "deliberation_completed",
             "report": report
         }, app_db)
     except Exception as exc:
+        if app_db and active_deliberation.get("paper_path"):
+            try:
+                pid = db.get_paper_id_by_path(active_deliberation["paper_path"])
+                if pid:
+                    await db.cleanup_websocket_frames(app_db, pid)
+            except Exception:
+                pass
         if abort_flag.is_set():
             active_deliberation["status"] = "aborted"
             logger.info("Deliberation cleanup completed after abort.")
@@ -677,15 +691,51 @@ async def abort_round():
     return {"status": "aborting"}
 
 
+@app.post("/api/appeal")
+async def submit_appeal(path: str, rebuttal: str):
+    decoded_path = unquote(path)
+    paper_id = db.get_paper_id_by_path(decoded_path)
+    if not paper_id:
+        raise HTTPException(status_code=404, detail=f"Paper not found: {decoded_path}")
+
+    loop = asyncio.get_running_loop()
+    try:
+        report = await loop.run_in_executor(
+            None,
+            lambda: council.submit_appeal(decoded_path, rebuttal)
+        )
+        return report
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Appeal processing failed: {exc}")
+
+@app.get("/api/appeals")
+async def get_appeals(path: str):
+    decoded_path = unquote(path)
+    paper_id = db.get_paper_id_by_path(decoded_path)
+    if not paper_id:
+        raise HTTPException(status_code=404, detail=f"Paper not found: {decoded_path}")
+    return db.get_appeals_by_paper(paper_id)
+
+@app.get("/api/prior_art")
+async def get_prior_art(query: str):
+    try:
+        from skills.prior_art_validator import PriorArtValidator
+        validator = PriorArtValidator()
+        return validator.query_prior_art(query)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Prior art query failed: {exc}")
+
+
 # ──────────────────────────────────────────────
 # Active WebSockets & Delta Replay Routes
 # ──────────────────────────────────────────────
 
-@app.websocket("/api/ws/{paper_id}")
-async def websocket_stream(websocket: WebSocket, paper_id: int):
+@app.websocket("/api/ws/{paper_id:path}")
+async def websocket_stream(websocket: WebSocket, paper_id: str):
     await websocket.accept()
     connected_clients.add(websocket)
-    logger.info(f"WebSocket connected for paper_id: {paper_id}")
+    decoded_pid = unquote(paper_id)
+    logger.info(f"WebSocket connected for paper_id/path: {decoded_pid}")
     try:
         while True:
             # Maintain active connection listening for optional client ping messages
@@ -693,16 +743,26 @@ async def websocket_stream(websocket: WebSocket, paper_id: int):
             # Ignore client pings, only check connection validity
     except WebSocketDisconnect:
         connected_clients.discard(websocket)
-        logger.info(f"WebSocket disconnected for paper_id: {paper_id}")
+        logger.info(f"WebSocket disconnected for paper_id/path: {decoded_pid}")
     except Exception as e:
         connected_clients.discard(websocket)
         logger.error(f"WebSocket error: {e}")
 
-@app.get("/api/deliberation/{paper_id}/replay")
-async def replay_websocket_frames(paper_id: int, since_seq: int = 0):
+@app.get("/api/deliberation/{paper_id:path}/replay")
+async def replay_websocket_frames(paper_id: str, since_seq: int = 0):
     """Replay sequence tracked frames for client-side offline hydration."""
+    decoded_id = unquote(paper_id)
+    numeric_id = None
+    if decoded_id.isdigit():
+        numeric_id = int(decoded_id)
+    else:
+        numeric_id = db.get_paper_id_by_path(decoded_id)
+
+    if not numeric_id:
+        return []
+
     try:
-        frames = await db.get_websocket_frames(settings.db_path, paper_id, since_seq)
+        frames = await db.get_websocket_frames(settings.db_path, numeric_id, since_seq)
         return frames
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Replay database retrieval failed: {e}")
