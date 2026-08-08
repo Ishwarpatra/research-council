@@ -8,6 +8,7 @@ __version__ = "1.0.0"
 
 
 import asyncio
+import builtins
 import hashlib
 import json
 import logging
@@ -47,6 +48,17 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stderr)]
 )
 logger = logging.getLogger("rcc")
+
+
+def _safe_print(*args, **kwargs) -> None:
+    """print() that cannot kill deliberation when Windows console handles are invalid."""
+    try:
+        builtins.print(*args, **kwargs)
+    except OSError:
+        try:
+            logger.info(" ".join(str(a) for a in args))
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
@@ -301,24 +313,31 @@ def _split_sections(text: str) -> dict:
         "claims":       ["claims", "claim", "contributions", "contribution"],
     }
 
+    def _header_match(low: str, kw: str) -> bool:
+        if low == kw or low == kw + ":":
+            return True
+        # "Methods: ..." is always a header even when the rest of the line is long
+        if low.startswith(kw + ":") or low.startswith(kw + "\t"):
+            return True
+        # Short title-style lines: "Methods Overview"
+        return len(low) < 80 and low.startswith(kw + " ")
+
     for line in text.split("\n"):
         low = line.strip().lower()
         matched = None
-        if len(low) < 80 and len(buf) > 50:
+        # Require some prior content so title-page noise is less likely to flip
+        # sections, but do not demand 50+ lines (short .txt fixtures / notes).
+        if low and len(buf) >= 1:
             for sec, kws in section_keywords.items():
-                if any(
-                    low == kw
-                    or low.startswith(kw + " ")
-                    or low.startswith(kw + ":")
-                    or low.startswith(kw + "\t")
-                    for kw in kws
-                ):
+                if any(_header_match(low, kw) for kw in kws):
                     matched = sec
                     break
         if matched and matched != current:
             sections[current] = "\n".join(buf).strip()
             current = matched
-            buf = [line]
+            # Keep body after "Methods:" on the header line; drop bare header-only lines
+            rest = line.split(":", 1)[1].strip() if ":" in line else ""
+            buf = [rest] if rest else []
         else:
             buf.append(line)
 
@@ -332,27 +351,41 @@ def _split_sections(text: str) -> dict:
 
 def extract_content(file_path: str) -> PaperContent:
     path   = Path(file_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Manuscript file not found: {file_path}")
+
     text   = ""
     tables: list = []
 
     if path.suffix.lower() == ".pdf":
-        if pdfplumber:
-            with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        text += t + "\n"
-                    for tbl in page.extract_tables() or []:
-                        fmt = _format_table(tbl)   # Fix 7: column-aligned
-                        if fmt:
-                            tables.append(fmt)
-        elif PdfReader:
-            reader = PdfReader(path)
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        else:
-            raise RuntimeError("Install pdfplumber or pypdf for PDF support.")
+        try:
+            if pdfplumber:
+                with pdfplumber.open(path) as pdf:
+                    for page in pdf.pages:
+                        t = page.extract_text()
+                        if t:
+                            text += t + "\n"
+                        for tbl in page.extract_tables() or []:
+                            fmt = _format_table(tbl)   # Fix 7: column-aligned
+                            if fmt:
+                                tables.append(fmt)
+            elif PdfReader:
+                reader = PdfReader(path)
+                text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            else:
+                raise RuntimeError("Install pdfplumber or pypdf for PDF support.")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Failed to extract PDF '{path}': {exc}") from exc
     else:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            raise RuntimeError(f"Failed to read text file '{path}': {exc}") from exc
+
+    if not text.strip() and not tables:
+        raise ValueError(f"No extractable text found in: {file_path}")
 
     sections  = _split_sections(text)
     citations = _extract_citations(text)
@@ -475,6 +508,10 @@ def call_llm_fallback(prompt: str, model: str) -> str:
 
 def call_llm(prompt: str, model: str) -> str:
     """Dispatch to LLM provider with fallback failover protection via CircuitBreaker state."""
+    # stub is a real primary mode — do not route through call_llm_primary (raises) or the breaker
+    if settings.llm_provider == "stub":
+        return call_llm_fallback(prompt, model)
+
     state = _run_async(primary_breaker.get_state())
     if state == "Open":
         logger.warning(f"Circuit breaker is OPEN. Automatically failing over to fallback: {settings.fallback_provider}")
@@ -501,7 +538,7 @@ def call_llm_with_retry(prompt: str, model: str, max_retries: int = 3) -> str:
             last_err = exc
             if attempt < max_retries - 1:
                 wait_sec = 2 ** attempt
-                print(
+                _safe_print(
                     f"   Retry {attempt + 1}/{max_retries - 1} for [{model}]"
                     f" in {wait_sec}s — {type(exc).__name__}: {exc}",
                     file=sys.stderr,
@@ -541,7 +578,8 @@ Follow the specific instructions for this round:
 1. Stay in your lane: While you may critique other agents in Round 2, your final output and score must revolve entirely around your `{assigned_criterion}`.
 2. Grounded Evidence: You must not hallucinate external papers unless explicitly comparing novelty (Domain Expert only). All critiques must reference the provided extracted text.
 3. No Sycophancy: Do not blindly agree with the council. If the paper has critical flaws in your domain, stand your ground even if other agents score the paper highly.
-4. Formatting: Your output must strictly adhere to the requested JSON schema.
+4. Skill Context: When a SKILL CONTEXT block is present (Jenni-style claim grounding / citation notes), cite ungrounded claims and evidence spans in your justification where relevant to your criterion.
+5. Formatting: Your output must strictly adhere to the requested JSON schema.
 
 # OUTPUT SCHEMA
 Rounds 1 & 3: {{"score": float, "justification": string, "evidence": [string]}}
@@ -549,11 +587,56 @@ Round 2 only: {{"score": float, "justification": string, "evidence": [string], "
 (challenge_target: exact name of the peer agent you formally challenge, or omit/null if no challenge)"""
 
 
+def _format_skill_context(skill_findings: dict | None, max_chars: int = 1500) -> str:
+    """Compact Jenni-style review findings for agent prompts."""
+    if not skill_findings:
+        return ""
+    review = skill_findings.get("review") if isinstance(skill_findings, dict) else None
+    if not review or not isinstance(review, dict):
+        return ""
+    skills = review.get("skills") or []
+    lines: list[str] = []
+
+    for skill in skills:
+        sid = skill.get("skill_id", "")
+        if sid == "review.claim_grounding":
+            findings = skill.get("findings") or []
+            ungrounded = [f for f in findings if isinstance(f, dict) and not f.get("grounded") and f.get("claim")]
+            supported = [f for f in findings if isinstance(f, dict) and f.get("grounded")]
+            lines.append(
+                f"Claim grounding: {skill.get('message', '')} "
+                f"({len(supported)} supported, {len(ungrounded)} ungrounded)."
+            )
+            for f in ungrounded[:5]:
+                lines.append(f"- UNGROUNDED: {f.get('claim', '')[:220]}")
+            for f in supported[:3]:
+                span = (f.get("evidence_span") or "")[:120]
+                lines.append(f"- SUPPORTED: {f.get('claim', '')[:160]}")
+                if span:
+                    lines.append(f"  evidence: {span}")
+        elif sid == "review.citation_hygiene":
+            for f in (skill.get("findings") or [])[:4]:
+                if isinstance(f, dict) and f.get("severity") in ("high", "medium"):
+                    lines.append(f"Citation: [{f.get('severity')}] {f.get('issue')} — {f.get('detail', '')[:160]}")
+        elif sid == "review.section_coherence":
+            for f in (skill.get("findings") or [])[:4]:
+                if isinstance(f, dict) and f.get("severity") in ("high", "medium"):
+                    lines.append(f"Coherence: [{f.get('severity')}] {f.get('issue')} {f.get('detail', '')[:120]}")
+
+    if not lines:
+        return ""
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n... [TRUNCATED]"
+    return text
+
+
 def build_prompt(
     agent: dict,
     paper: PaperContent,
     round_num: int,
     peer_reviews: list | None = None,
+    skill_context: str | None = None,
 ) -> str:
     """Chronologically format peer reviews and prior reviews for chronological debate context."""
     prompt = BASE_PROMPT.format(
@@ -569,6 +652,13 @@ def build_prompt(
         extracted_claims=paper.claims[:3000],
         current_round_number=round_num,
     )
+    if skill_context and skill_context.strip():
+        prompt += (
+            "\n# SKILL CONTEXT (Jenni-style claim grounding)\n"
+            "Use the following automated skill findings when scoring. "
+            "Flag ungrounded claims if they affect your criterion.\n"
+            f"{skill_context.strip()}\n"
+        )
     if peer_reviews:
         if round_num == 2:
             label = "ROUND 1 PEER REVIEWS — Identify disagreements and prepare challenges"
@@ -614,16 +704,17 @@ def run_round(
     paper: PaperContent,
     round_num: int,
     peer_reviews: list | None = None,
+    skill_context: str | None = None,
 ) -> list:
     """Run deliberation for this round, checking structured outputs JSON format."""
     reviews = []
     for agent in AGENTS:
-        prompt = build_prompt(agent, paper, round_num, peer_reviews)
+        prompt = build_prompt(agent, paper, round_num, peer_reviews, skill_context=skill_context)
 
         try:
             response = call_llm_with_retry(prompt, agent["model"])
         except Exception as exc:
-            print(
+            _safe_print(
                 f"Warning: [{agent['name']}] LLM failed in round {round_num}: {exc}",
                 file=sys.stderr,
             )
@@ -639,7 +730,7 @@ def run_round(
             data = json.loads(response)
             score = max(1.0, min(5.0, float(data.get("score", 3.0))))
         except Exception as exc:
-            print(
+            _safe_print(
                 f"Warning: [{agent['name']}] JSON loads failed in round {round_num}: {exc}",
                 file=sys.stderr,
             )
@@ -664,7 +755,11 @@ def _should_prompt() -> bool:
         return False
     if "--non-interactive" in sys.argv:
         return False
-    return sys.stdin.isatty()
+    try:
+        return sys.stdin.isatty()
+    except OSError:
+        # Windows: isatty() raises Errno 22 when stdin is detached (API / background).
+        return False
 
 
 def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl_hook=None) -> dict:
@@ -683,7 +778,7 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
         paper_id = save_paper(paper)
 
     if _is_stub():
-        print(
+        _safe_print(
             "\n" + "=" * 60 +
             "\n  SIMULATED — no LLM model was called" +
             "\n  Scores are hash-derived and carry no analytical meaning." +
@@ -693,8 +788,19 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
             file=sys.stderr,
         )
 
-    print("Deliberating: Round 1 - Initial reviews...")
-    r1 = run_round(paper, 1)
+    skill_findings: dict = {"review": None, "audit": None}
+    try:
+        from skills import run_skill_tree
+        _safe_print("Running skill tree: review...")
+        skill_findings["review"] = run_skill_tree("review", paper=paper)
+    except Exception as exc:
+        logger.warning("Review skill tree failed: %s", exc)
+        skill_findings["review"] = {"mode": "review", "error": str(exc), "skills": []}
+
+    skill_context = _format_skill_context(skill_findings)
+
+    _safe_print("Deliberating: Round 1 - Initial reviews...")
+    r1 = run_round(paper, 1, skill_context=skill_context)
     for r in r1:
         save_review(paper_id, r)
 
@@ -703,16 +809,16 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
         if not approved:
             raise RuntimeError("Deliberation aborted during Round 1 review.")
     elif _should_prompt():
-        print("\n--- [Human-in-the-Loop] Round 1 Complete ---")
+        _safe_print("\n--- [Human-in-the-Loop] Round 1 Complete ---")
         for r in r1:
-            print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0")
+            _safe_print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0")
         val = input("Press Enter to approve and continue to Round 2 (or type 'abort' to stop): ").strip().lower()
         if val == "abort":
-            print("Deliberation aborted by user.", file=sys.stderr)
+            _safe_print("Deliberation aborted by user.", file=sys.stderr)
             sys.exit(1)
 
-    print("Deliberating: Round 2 - Peer debate...")
-    r2 = run_round(paper, 2, r1)          # agents see Round 1 history
+    _safe_print("Deliberating: Round 2 - Peer debate...")
+    r2 = run_round(paper, 2, r1, skill_context=skill_context)          # agents see Round 1 history
     for r in r2:
         save_review(paper_id, r)
 
@@ -722,14 +828,24 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
     prior_art_findings = []
     if interim_agg < 3.5 or any("prior_art" in (r.justification or "").lower() for r in r2):
         try:
-            from skills.prior_art_validator import PriorArtValidator
-            validator = PriorArtValidator()
+            from skills.agent_tools import dispatch_tool
             qtext = paper.claims or paper.abstract or paper.full_text[:500]
             if qtext:
-                pa_res = validator.query_prior_art(qtext, n_results=3)
+                pa_res = dispatch_tool("query_prior_art", {"query_text": qtext, "n_results": 3}, paper=paper)
                 if pa_res.get("status") == "success":
                     prior_art_findings = pa_res.get("findings", [])
                     logger.info(f"PriorArtValidator retrieved {len(prior_art_findings)} references.")
+                    # Enrich skill context for Round 3 with prior-art hits
+                    if prior_art_findings:
+                        pa_lines = ["Prior art hits:"]
+                        for hit in prior_art_findings[:3]:
+                            src = hit.get("source", "Unknown")
+                            content = (hit.get("content") or "")[:160]
+                            pa_lines.append(f"- [{src}] {content}")
+                        extra = "\n".join(pa_lines)
+                        skill_context = (skill_context + "\n" + extra).strip() if skill_context else extra
+                        if len(skill_context) > 1500:
+                            skill_context = skill_context[:1500] + "\n... [TRUNCATED]"
         except Exception as exc:
             logger.warning(f"PriorArtValidator trigger encountered issue: {exc}")
 
@@ -738,16 +854,16 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
         if not approved:
             raise RuntimeError("Deliberation aborted during Round 2 review.")
     elif _should_prompt():
-        print("\n--- [Human-in-the-Loop] Round 2 Complete ---")
+        _safe_print("\n--- [Human-in-the-Loop] Round 2 Complete ---")
         for r in r2:
-            print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0 (Challenging: {r.challenge_target or 'None'})")
+            _safe_print(f"  * {r.agent_name} ({r.criterion}): {r.score}/5.0 (Challenging: {r.challenge_target or 'None'})")
         val = input("Press Enter to approve and continue to Round 3 (or type 'abort' to stop): ").strip().lower()
         if val == "abort":
-            print("Deliberation aborted by user.", file=sys.stderr)
+            _safe_print("Deliberation aborted by user.", file=sys.stderr)
             sys.exit(1)
 
-    print("Deliberating: Round 3 - Final positions...")
-    r3 = run_round(paper, 3, r1 + r2)    # agents see full accumulated history
+    _safe_print("Deliberating: Round 3 - Final positions...")
+    r3 = run_round(paper, 3, r1 + r2, skill_context=skill_context)    # agents see full accumulated history
     for r in r3:
         save_review(paper_id, r)
 
@@ -756,9 +872,42 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
     aggregate    = ScoreCalculator.compute(WEIGHTS, final_scores)
     verdict      = determine_verdict(aggregate)
 
-    print(f"Verdict: {verdict} ({aggregate}/5.0)")
+    _safe_print(f"Verdict: {verdict} ({aggregate}/5.0)")
 
-    report = generate_report(paper, all_reviews, aggregate, verdict, prior_art_findings=prior_art_findings)
+    # Persist Round-3 scores first so audit.bias_drift can see this deliberation
+    report = generate_report(
+        paper, all_reviews, aggregate, verdict,
+        prior_art_findings=prior_art_findings,
+        skill_findings={"review": skill_findings.get("review"), "audit": None},
+    )
+    save_deliberation(paper_id, aggregate, verdict, report)
+
+    try:
+        from skills import run_skill_tree
+        review_rows = [
+            {
+                "agent_name": r.agent_name,
+                "criterion": r.criterion,
+                "score": r.score,
+                "round_num": r.round,
+                "challenge_target": r.challenge_target,
+            }
+            for r in all_reviews
+        ]
+        _safe_print("Running skill tree: audit...")
+        skill_findings["audit"] = run_skill_tree(
+            "audit",
+            paper=paper,
+            context={
+                "reviews": review_rows,
+                "query_text": paper.claims or paper.abstract or "",
+            },
+        )
+    except Exception as exc:
+        logger.warning("Audit skill tree failed: %s", exc)
+        skill_findings["audit"] = {"mode": "audit", "error": str(exc), "skills": []}
+
+    report["skill_findings"] = skill_findings
     save_deliberation(paper_id, aggregate, verdict, report)
     notify(verdict, aggregate, paper.file_path)
     return report
@@ -766,13 +915,13 @@ def _run_council_on_paper(paper: PaperContent, paper_id: int | None = None, hitl
 
 def run_council(paper_path: str, hitl_hook=None) -> dict:
     """CLI entry: extract paper -> 3-round deliberation -> save & return report."""
-    print(f"Extracting: {paper_path}")
+    _safe_print(f"Extracting: {paper_path}")
     paper = extract_content(paper_path)
 
     # Cache check: compare hashes derived from the same extraction pipeline
     cached = load_paper(paper_path)
     if cached and cached.content_hash == paper.content_hash:
-        print("Content unchanged - using cached section splits")
+        _safe_print("Content unchanged - using cached section splits")
         paper = cached
 
     return _run_council_on_paper(paper, hitl_hook=hitl_hook)   # Fix 10: init_db() NOT called here
@@ -798,7 +947,14 @@ def determine_verdict(score: float) -> str:
 # Report generation
 # ──────────────────────────────────────────────
 
-def generate_report(paper: PaperContent, reviews: list[AgentReview], aggregate: float, verdict: str, prior_art_findings: list = None) -> dict:
+def generate_report(
+    paper: PaperContent,
+    reviews: list[AgentReview],
+    aggregate: float,
+    verdict: str,
+    prior_art_findings: list = None,
+    skill_findings: dict | None = None,
+) -> dict:
     final_reviews = [r for r in reviews if r.round == 3]
 
     scores = {r.criterion: r.score for r in final_reviews}
@@ -833,6 +989,8 @@ def generate_report(paper: PaperContent, reviews: list[AgentReview], aggregate: 
     }
     if prior_art_findings:
         report["prior_art_findings"] = prior_art_findings
+    if skill_findings:
+        report["skill_findings"] = skill_findings
     return report
 
 
@@ -852,14 +1010,14 @@ def notify(verdict: str, score: float, paper_path: str) -> None:
     ts   = time.strftime("%Y-%m-%d %H:%M:%S")
 
     # 1. Console
-    print(f"Notification: {msg}")
+    _safe_print(f"Notification: {msg}")
 
     # 2. Append-only log file
     try:
         with open("council_notifications.log", "a", encoding="utf-8") as lf:
             lf.write(f"[{ts}] {msg}\n")
     except OSError as exc:
-        print(f"Warning: Could not write notification log: {exc}", file=sys.stderr)
+        _safe_print(f"Warning: Could not write notification log: {exc}", file=sys.stderr)
 
     # 3. Webhook POST
     webhook_url = CFG.get("webhook_url", "")
@@ -879,9 +1037,9 @@ def notify(verdict: str, score: float, paper_path: str) -> None:
             )
             with urllib.request.urlopen(req, timeout=10):
                 pass
-            print(f"Webhook delivered to {webhook_url}")
+            _safe_print(f"Webhook delivered to {webhook_url}")
         except Exception as exc:
-            print(f"Warning: Webhook delivery failed: {exc}", file=sys.stderr)
+            _safe_print(f"Warning: Webhook delivery failed: {exc}", file=sys.stderr)
 
 
 # ──────────────────────────────────────────────
@@ -895,6 +1053,9 @@ def submit_appeal(paper_path: str, author_rebuttal: str) -> dict:
     overwriting the original paper record in the database.
     The appeal verdict is written back to the appeals table.
     """
+    if not author_rebuttal or not str(author_rebuttal).strip():
+        return {"error": "Rebuttal text is required."}
+
     paper = load_paper(paper_path)
     if not paper:
         return {"error": "Paper not found. Run council first."}
@@ -903,7 +1064,8 @@ def submit_appeal(paper_path: str, author_rebuttal: str) -> dict:
     if not paper_id:
         return {"error": "Paper ID not found in database."}
 
-    appeal_id = db.insert_appeal(paper_id, author_rebuttal)
+    rebuttal = str(author_rebuttal).strip()
+    appeal_id = db.insert_appeal(paper_id, rebuttal)
 
     appeal_paper = PaperContent(
         file_path=paper.file_path,
@@ -911,12 +1073,16 @@ def submit_appeal(paper_path: str, author_rebuttal: str) -> dict:
         abstract=paper.abstract,
         methods=paper.methods,
         results=paper.results,
-        claims=paper.claims + f"\n\n[AUTHOR REBUTTAL]\n{author_rebuttal}",
-        full_text=paper.full_text + f"\n\n[AUTHOR REBUTTAL]\n{author_rebuttal}",
+        claims=paper.claims + f"\n\n[AUTHOR REBUTTAL]\n{rebuttal}",
+        full_text=paper.full_text + f"\n\n[AUTHOR REBUTTAL]\n{rebuttal}",
     )
 
-    print("Appeal submitted. Re-deliberating with rebuttal context...")
-    report = _run_council_on_paper(appeal_paper, paper_id=paper_id)
+    _safe_print("Appeal submitted. Re-deliberating with rebuttal context...")
+    try:
+        report = _run_council_on_paper(appeal_paper, paper_id=paper_id)
+    except Exception as exc:
+        logger.exception("Appeal re-deliberation failed for %s", paper_path)
+        return {"error": f"Appeal re-deliberation failed: {exc}"}
 
     new_verdict = report.get("executive_summary", {}).get("verdict", "Unknown")
     db.update_appeal_verdict(appeal_id, new_verdict)
@@ -939,7 +1105,7 @@ def run_api_server() -> None:
     try:
         start_api_server("127.0.0.1", 8080)
     except KeyboardInterrupt:
-        print("\nAPI server stopped")
+        _safe_print("\nAPI server stopped")
 
 
 # ──────────────────────────────────────────────
@@ -984,46 +1150,61 @@ def run_monthly_audit() -> dict:
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("Usage:")
-        print("  python council.py <paper.pdf> [--non-interactive]   # Run full council")
-        print("  python council.py --appeal <paper.pdf> \"rebuttal\"   # Submit appeal")
-        print("  python council.py --audit                           # Run monthly bias audit")
-        print("  python council.py --history <paper.pdf>             # Show review history")
-        print("  python council.py --api                             # Start REST API server")
-        print("  python council.py --version                         # Output version information")
+        _safe_print("Usage:")
+        _safe_print("  python council.py <paper.pdf> [--non-interactive]   # Run full council")
+        _safe_print("  python council.py --appeal <paper.pdf> \"rebuttal\"   # Submit appeal")
+        _safe_print("  python council.py --audit                           # Run skill-tree audit (+ monthly drift)")
+        _safe_print("  python council.py --review <paper>                  # Run review skill tree only")
+        _safe_print("  python council.py --history <paper.pdf>             # Show review history")
+        _safe_print("  python council.py --api                             # Start REST API server")
+        _safe_print("  python council.py --version                         # Output version information")
         return
 
     cmd = sys.argv[1]
 
     if cmd in ("--version", "-v"):
-        print(f"Research Consensus Council v{__version__}")
+        _safe_print(f"Research Consensus Council v{__version__}")
         return
 
     if cmd == "--appeal":
         if len(sys.argv) < 4:
-            print("Usage: python council.py --appeal <paper.pdf> \"rebuttal text\"")
+            _safe_print("Usage: python council.py --appeal <paper.pdf> \"rebuttal text\"")
             sys.exit(1)
         report = submit_appeal(sys.argv[2], sys.argv[3])
-        print(json.dumps(report, indent=2))
+        _safe_print(json.dumps(report, indent=2))
 
     elif cmd == "--audit":
-        result = run_monthly_audit()
-        print(json.dumps(result, indent=2))
+        from skills import run_skill_tree
+        monthly = run_monthly_audit()
+        tree = run_skill_tree("audit", context={"reviews": []})
+        _safe_print(json.dumps({"monthly": monthly, "skill_tree": tree}, indent=2))
+
+    elif cmd == "--review":
+        if len(sys.argv) < 3:
+            _safe_print("Usage: python council.py --review <paper>")
+            sys.exit(1)
+        from skills import run_skill_tree
+        try:
+            paper = extract_content(sys.argv[2])
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            _safe_print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _safe_print(json.dumps(run_skill_tree("review", paper=paper), indent=2))
 
     elif cmd == "--history":
         if len(sys.argv) < 3:
-            print("Usage: python council.py --history <paper>")
+            _safe_print("Usage: python council.py --history <paper>")
             sys.exit(1)
         pid = db.get_paper_id_by_path(sys.argv[2])
         if not pid:
-            print("No review history found for that paper.")
+            _safe_print("No review history found for that paper.")
             sys.exit(1)
         rows = db.get_paper_reviews(pid)
         if not rows:
-            print("No review history found for that paper.")
+            _safe_print("No review history found for that paper.")
             sys.exit(1)
         for r in rows:
-            print(f"  Round {r['round_num']} | {r['agent_name']} ({r['criterion']}): {r['score']}/5")
+            _safe_print(f"  Round {r['round_num']} | {r['agent_name']} ({r['criterion']}): {r['score']}/5")
 
     elif cmd == "--api":
         run_api_server()
@@ -1033,15 +1214,18 @@ def main():
             # First argument is assumed to be paper path
             report = run_council(cmd)
         except FileNotFoundError as exc:
-            print(f"Error: File not found: {exc}", file=sys.stderr)
+            _safe_print(f"Error: File not found: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except ValueError as exc:
+            _safe_print(f"Error: Invalid manuscript: {exc}", file=sys.stderr)
             sys.exit(1)
         except Exception as exc:
-            print(f"Error executing council: {exc}", file=sys.stderr)
+            _safe_print(f"Error executing council: {exc}", file=sys.stderr)
             sys.exit(1)
 
         out_path = Path(cmd).with_suffix(".report.json")
         out_path.write_text(json.dumps(report, indent=2))
-        print(f"Report saved: {out_path}")
+        _safe_print(f"Report saved: {out_path}")
 
 
 if __name__ == "__main__":

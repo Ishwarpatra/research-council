@@ -53,39 +53,52 @@ The base instructions are hosted in `council.py` as `BASE_PROMPT` and populated 
 ### 4. Interactive Human-in-the-Loop Processor
 - **Capability:** Pauses execution at round boundaries to enable reviews of intermediate prompts, justifications, and scores. Allows developers/evaluators to approve, override, or abort execution.
 
+## Agent-kit tool registry (`skills/agent_tools.py`)
+
+Registered OpenAI-format function schemas (for API/docs/future tool-calling loops). **Today agents consume results via prompt injection**, not a multi-turn `tool_calls` loop.
+
+| Tool name | Implementation |
+|---|---|
+| `query_claim_grounding` | Jenni-style claim confidence (`skills/review/claim_grounding.py`) — evidence from methods/results only |
+| `query_prior_art` | `PriorArtValidator` (Chroma + optional Jina embed/rerank) |
+
+Dispatch: `dispatch_tool(name, args, paper) -> dict`. List schemas: `GET /api/skills/tools`. Claim check API: `POST /api/skills/claim_grounding?path=`.
+
 ## Custom Agent: Prior Art Validator
 - **Role**: Cross-references claims made by the primary deliberation agents against a local dataset of verified research papers.
-- **Trigger Mechanism**: Invoked during Round 2 of the deliberation state engine if the consensus score drops below a 3.5 threshold, or if an agent explicitly requests claim verification.
+- **Trigger Mechanism**: Invoked during Round 2 of the deliberation state engine if the consensus score drops below a 3.5 threshold, or if an agent explicitly requests claim verification. Uses `dispatch_tool("query_prior_art", ...)`.
 
-## Custom Skill: Semantic Vector Retrieval (ChromaDB)
-- **Description**: A local retrieval-augmented generation (RAG) tool that performs semantic searches against an offline ChromaDB instance to retrieve relevant source documents without incurring external API latency.
+## Custom Skill: Semantic Vector Retrieval (ChromaDB + Jina)
+- **Description**: Local RAG against ChromaDB; hybrid mode may use Jina embeddings/rerank when `JINA_API_KEY` is set.
 
 ### LLM Tool Integration Schema (OpenAI Format)
-The following JSON schema is injected into the payload when routing to the Prior Art Validator agent:
+
+Canonical schemas live in `skills/agent_tools.py` (`TOOL_SCHEMAS`). Example — claim grounding:
 
 ```json
 {
   "type": "function",
   "function": {
-    "name": "query_prior_art",
-    "description": "Searches the local vector database for existing research and prior art related to a specific scientific claim.",
+    "name": "query_claim_grounding",
+    "description": "Jenni-style claim confidence check against methods/results evidence spans.",
     "parameters": {
       "type": "object",
       "properties": {
-        "query_text": {
+        "claim_text": {
           "type": "string",
-          "description": "The specific scientific claim or keyword phrase to verify against the local database."
-        },
-        "n_results": {
-          "type": "integer",
-          "description": "The number of top semantic matches to retrieve. Defaults to 3.",
-          "minimum": 1,
-          "maximum": 5
+          "description": "Optional single claim; omit to check all paper claims."
         }
       },
-      "required": ["query_text"],
       "additionalProperties": false
     }
   }
 }
 ```
+
+Prior-art schema (`query_prior_art`) is also registered there. These schemas are **registered for agents**, not currently injected into every LLM chat payload (no multi-turn tool loop yet).
+
+## Operator UI (frontend)
+
+- React 18 + Vite SPA in `frontend/`. Local API pairing defaults to port **8090** ([SETUP.md](SETUP.md)).
+- Landing page gates the portal; **SideNav** is the only workspace view navigator; **TopNav** is brand + notifications + Settings.
+- Browser Back and **Leave portal** restore the landing page via the History API.

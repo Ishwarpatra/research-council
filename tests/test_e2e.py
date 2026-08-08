@@ -68,24 +68,30 @@ class TestConsensusCouncilE2E(unittest.TestCase):
             self.assertIn("status", data)
             self.assertIn("findings", data)
 
-    def test_playwright_dashboard_navigation(self):
-        """Playwright test: navigate dashboard, check visual headings."""
+    def test_playwright_root_surface(self):
+        """Playwright: root HTML loads — legacy dashboard or React SPA landing."""
         if not HAS_PLAYWRIGHT:
             self.skipTest("Playwright library is not installed in the current environment.")
 
         with sync_playwright() as p:
-            # Headless browser navigation
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             try:
-                page.goto("http://127.0.0.1:8081/")
-                # Verify header title is present and visible
-                header_text = page.locator("header h1").text_content()
-                self.assertIn("Research Consensus Council", header_text)
-
-                # Check list has loading text or loaded entries
-                aside_text = page.locator("aside").text_content()
-                self.assertIn("Processed Papers", aside_text)
+                page.goto("http://127.0.0.1:8081/", wait_until="domcontentloaded")
+                body = page.locator("body").inner_text()
+                self.assertTrue(
+                    "Research Consensus Council" in body or "RCC" in body,
+                    "Expected RCC branding on root page",
+                )
+                # React portal landing (when frontend/dist is mounted)
+                if page.locator("[data-testid='access-portal-btn']").count() > 0:
+                    page.locator("[data-testid='access-portal-btn']").click()
+                    page.wait_for_selector("[data-testid='side-council']", timeout=5000)
+                    self.assertGreater(page.locator("[data-testid='side-research']").count(), 0)
+                else:
+                    # Legacy embedded dashboard (no SPA build)
+                    aside_text = page.locator("aside").text_content() or ""
+                    self.assertIn("Processed Papers", aside_text)
             finally:
                 browser.close()
 

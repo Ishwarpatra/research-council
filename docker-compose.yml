@@ -1,4 +1,5 @@
 version: '3.8'
+# Container ports use 8080. Local Windows stub + Vite pairing prefers 8090 (SETUP.md).
 
 services:
   backend:
@@ -27,6 +28,7 @@ services:
     ports:
       - "3000:80"
     environment:
+      # Host browser reaches the published backend port
       - VITE_API_WSS_URL=ws://localhost:8080
       - VITE_API_REST_URL=http://localhost:8080
     depends_on:

@@ -30,12 +30,15 @@ jobs:
 
     - name: Syntax compilation check
       run: |
-        python -m py_compile council.py
+        python -m py_compile council.py api.py
 
     - name: Run E2E and API tests
       env:
+        # E2E spins the API on 8081 (see tests/test_e2e.py). Local UI docs use 8090; Docker uses 8080.
         OPENAI_API_KEY: dummy_openai_key
-        WEBHOOK_URL: http://localhost:8080/dummy_webhook
+        WEBHOOK_URL: http://127.0.0.1:8081/dummy_webhook
+        LLM_PROVIDER: stub
+        FALLBACK_PROVIDER: stub
       run: |
         pip install pytest
         pytest tests/test_units.py tests/test_e2e.py

@@ -1,0 +1,14 @@
+Title: Grounded Protein Folding Study
+
+Abstract
+We evaluate transformer attention for protein residue graph folding with careful controls and baselines.
+
+Methods
+In a controlled study we apply transformer attention over residue graphs for folding prediction using cross-validation on one hundred thousand structures with ablation on attention heads and residual connections across three random seeds in the laboratory pipeline.
+
+Results
+Accuracy reached ninety percent on the CASP14 benchmark suite versus strong published baselines under identical splits.
+
+Claims
+Transformer attention improves folding prediction accuracy on CASP14.
+Accuracy reached ninety percent on the CASP14 benchmark suite versus strong baselines.

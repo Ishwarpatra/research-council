@@ -22,8 +22,13 @@ The Research Consensus Council is an agentic tool built to automate academic res
 
 ### Story 4: Frontend Operator
 - **As a** conference organizer,
-- **I want to** view a real-time dark-mode dashboard displaying processed papers, score gauges, timeline reviews, and live weight adjustment panels,
-- **So that** I can manage configurations dynamically.
+- **I want to** enter a portal from a landing page, navigate Research/Council/Archive/Audit/Lab/Docs from a single SideNav, watch live deliberation (WebSocket), adjust weights in Settings, and use browser Back or Leave portal to return to landing,
+- **So that** I can operate reviews without duplicated top-bar navigation or losing the marketing entry point.
+
+### Story 5: Local Stub Developer
+- **As a** developer on Windows,
+- **I want to** run the stub API on port **8090** (when 8080 is occupied) with the Vite app pointed at that base URL,
+- **So that** I can exercise upload, deliberation, and HITL without Docker.
 
 ## 3. Task Breakdown & Timeline (12-Week Roadmap)
 
@@ -43,6 +48,7 @@ The Research Consensus Council is an agentic tool built to automate academic res
 - Add interactive Human-in-the-Loop approval sequences.
 
 ### Phase 4: API, Interface & QA (Weeks 10-12)
-- Configure `ThreadingHTTPServer` to host non-blocking backend JSON APIs.
-- Build dark-mode HTML5/CSS3 Dashboard.
-- Write E2E Playwright verification tests and deploy GitHub Actions CI workflow.
+- Host FastAPI (`api.py`) with REST + WebSocket + HITL approve/abort.
+- Ship React portal: landing gate, AppShell (TopNav chrome + SideNav views), Docs/Audit/Lab.
+- Wire History API for portal enter/leave; GitHub Actions CI (ruff, pytest, Vitest).
+- Document local **8090** vs Docker **8080** in SETUP.md.

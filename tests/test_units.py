@@ -122,5 +122,187 @@ class TestConsensusCouncilUnits(unittest.TestCase):
 
         asyncio.run(test_async_cleanup())
 
+    def test_extract_content_missing_file(self):
+        """Missing manuscript must raise FileNotFoundError before LLM work."""
+        from council import extract_content
+        with self.assertRaises(FileNotFoundError):
+            extract_content("tests/fixtures/does_not_exist.pdf")
+
+    def test_extract_content_short_txt_sections(self):
+        """Short .txt papers must still populate methods/results (not only abstract)."""
+        from council import extract_content
+        p = extract_content("tests/fixtures/paper_grounded.txt")
+        self.assertIn("transformer attention", p.methods.lower())
+        self.assertIn("casp14", p.results.lower())
+        self.assertTrue(p.claims.strip())
+
+    def test_safe_print_survives_broken_stderr(self):
+        """Windows API hosts can have invalid stderr (Errno 22); stub banner must not abort."""
+        import sys
+        from council import _safe_print, _should_prompt
+
+        class Broken:
+            def write(self, _s):
+                raise OSError(22, "Invalid argument")
+
+            def flush(self):
+                pass
+
+        old = sys.stderr
+        try:
+            sys.stderr = Broken()
+            _safe_print("SIMULATED banner", file=sys.stderr)
+        finally:
+            sys.stderr = old
+
+        class BrokenStdin:
+            def isatty(self):
+                raise OSError(22, "Invalid argument")
+
+        old_in = sys.stdin
+        try:
+            sys.stdin = BrokenStdin()
+            self.assertFalse(_should_prompt())
+        finally:
+            sys.stdin = old_in
+
+    def test_submit_appeal_rejects_empty_rebuttal(self):
+        """Empty rebuttal is a client error, not a silent re-deliberation."""
+        from council import submit_appeal
+        result = submit_appeal("any.pdf", "   ")
+        self.assertIn("error", result)
+        self.assertIn("Rebuttal", result["error"])
+
+    def test_jina_client_skips_without_key(self):
+        """Without JINA_API_KEY, embed/rerank soft-skip (no network)."""
+        from skills.retrieval.jina_client import JinaClient
+        client = JinaClient(api_key="")
+        emb = client.embed(["hello world"])
+        self.assertEqual(emb["status"], "skipped")
+        self.assertEqual(emb["embeddings"], [])
+        rr = client.rerank("q", ["doc a", "doc b"])
+        self.assertEqual(rr["status"], "skipped")
+
+    def test_jina_embed_mock_success(self):
+        """Mocked httpx response yields success embeddings."""
+        from unittest.mock import MagicMock, patch
+        from skills.retrieval.jina_client import JinaClient
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"embedding": [0.1, 0.2]}, {"embedding": [0.3, 0.4]}]
+        }
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = False
+        mock_client.post.return_value = mock_resp
+
+        with patch("skills.retrieval.jina_client.httpx.Client", return_value=mock_client):
+            client = JinaClient(api_key="test-key")
+            emb = client.embed(["a", "b"])
+        self.assertEqual(emb["status"], "success")
+        self.assertEqual(len(emb["embeddings"]), 2)
+
+    def test_review_skill_tree_claim_grounding(self):
+        """Review tree returns claim_grounding with grounded/ungrounded flags."""
+        from council import PaperContent
+        from skills import run_skill_tree
+
+        paper = PaperContent(
+            file_path="t.txt",
+            content_hash="x",
+            abstract="We study neural ranking for scientific claims with strong evidence.",
+            methods="We trained a neural ranking model on annotated scientific claims.",
+            results="The neural ranking model improved nDCG on the held-out set.",
+            claims="Our neural ranking model improves claim verification accuracy substantially.",
+            full_text="filler",
+        )
+        out = run_skill_tree("review", paper=paper)
+        self.assertEqual(out["mode"], "review")
+        ids = [s["skill_id"] for s in out["skills"]]
+        self.assertIn("review.claim_grounding", ids)
+        cg = next(s for s in out["skills"] if s["skill_id"] == "review.claim_grounding")
+        self.assertEqual(cg["status"], "success")
+        self.assertTrue(any(f.get("grounded") for f in cg["findings"] if isinstance(f, dict) and "claim" in f))
+
+    def test_claim_grounding_ungrounded_without_methods_results(self):
+        """Claims only in claims/abstract (not methods/results) must be ungrounded."""
+        from council import PaperContent
+        from skills.review.claim_grounding import run_claim_grounding
+
+        paper = PaperContent(
+            file_path="t.txt",
+            content_hash="x",
+            abstract="Placeholder abstract text that is long enough to parse as content.",
+            methods="",
+            results="",
+            claims="This revolutionary approach completely transforms structural biology overnight.",
+            full_text="This revolutionary approach completely transforms structural biology overnight.",
+        )
+        res = run_claim_grounding(paper)
+        claim_findings = [f for f in res.findings if isinstance(f, dict) and f.get("claim")]
+        self.assertTrue(claim_findings)
+        self.assertTrue(all(not f.get("grounded") for f in claim_findings))
+
+    def test_claim_grounding_supported_from_methods(self):
+        """Claim echoed in methods (not only full_text) is supported."""
+        from council import PaperContent
+        from skills.agent_tools import dispatch_tool
+
+        paper = PaperContent(
+            file_path="t.txt",
+            content_hash="x",
+            abstract="",
+            methods="We apply transformer attention over residue graphs for folding prediction.",
+            results="Accuracy reached ninety percent on the CASP14 benchmark suite.",
+            claims="We apply transformer attention over residue graphs for folding prediction with strong gains.",
+            full_text="",
+        )
+        out = dispatch_tool("query_claim_grounding", {}, paper=paper)
+        self.assertEqual(out["status"], "success")
+        self.assertTrue(any(f.get("grounded") for f in out["findings"] if isinstance(f, dict)))
+
+    def test_build_prompt_includes_skill_context(self):
+        """Agents receive SKILL CONTEXT block when review findings are formatted."""
+        from council import AGENTS, PaperContent, _format_skill_context, build_prompt
+
+        paper = PaperContent(
+            file_path="t.txt", content_hash="x",
+            abstract="a" * 60, methods="m" * 60, results="r" * 60, claims="c" * 60, full_text="t",
+        )
+        skill_findings = {
+            "review": {
+                "skills": [{
+                    "skill_id": "review.claim_grounding",
+                    "message": "0/1 claims grounded",
+                    "findings": [{
+                        "claim": "Ungrounded megaclaim about curing all disease immediately.",
+                        "grounded": False,
+                        "confidence": "ungrounded",
+                    }],
+                }],
+            }
+        }
+        ctx = _format_skill_context(skill_findings)
+        self.assertIn("UNGROUNDED", ctx)
+        prompt = build_prompt(AGENTS[0], paper, 1, skill_context=ctx)
+        self.assertIn("SKILL CONTEXT", prompt)
+        self.assertIn("UNGROUNDED", prompt)
+
+    def test_agent_tools_registry(self):
+        from skills.agent_tools import TOOL_SCHEMAS, list_tool_names
+        names = list_tool_names()
+        self.assertIn("query_claim_grounding", names)
+        self.assertIn("query_prior_art", names)
+        self.assertEqual(len(TOOL_SCHEMAS), 2)
+
+    def test_rerank_passthrough_without_jina(self):
+        from skills.retrieval.jina_client import JinaClient
+        from skills.retrieval.rerank import rerank_documents
+        res = rerank_documents("q", ["alpha", "beta", "gamma"], top_n=2, client=JinaClient(api_key=""))
+        self.assertIn(res["status"], ("skipped", "success", "error"))
+        self.assertEqual(len(res["findings"]), 2)
+
 if __name__ == "__main__":
     unittest.main()

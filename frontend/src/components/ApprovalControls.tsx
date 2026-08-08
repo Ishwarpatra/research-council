@@ -40,7 +40,7 @@ export const ApprovalControls: React.FC<ApprovalControlsProps> = ({
           </button>
           <button
             className="btn"
-            style={{ padding: '4px 10px', fontSize: '0.72rem', background: '#2b3050', color: '#e4e8f1' }}
+            style={{ padding: '4px 10px', fontSize: '0.72rem', background: 'var(--surface-muted)', color: 'var(--ink)', border: '1px solid var(--border)' }}
             onClick={() => setConfirmingAbort(false)}
             data-testid="cancel-abort-btn"
           >

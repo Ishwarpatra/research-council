@@ -1,10 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useDeliberationStream } from './hooks/useDeliberationStream';
-import { DataPanel } from './components/DataPanel';
-import { TokenStream } from './components/TokenStream';
-import { ApprovalControls } from './components/ApprovalControls';
 import { ToastNotification, NotificationBell } from './components/ToastNotification';
 import { SettingsPanel } from './components/SettingsPanel';
+import { AppShell } from './components/layout/AppShell';
+import { CouncilView } from './views/CouncilView';
+import { ResearchView } from './views/ResearchView';
+import { ArchiveView } from './views/ArchiveView';
+import { LabView } from './views/LabView';
+import { DocsView } from './views/DocsView';
+import { AuditView } from './views/AuditView';
+import { LandingView } from './views/LandingView';
+import { API_BASE, paperBasename, type AppView } from './lib/api';
+import { COUNCIL_AGENTS, type AgentStatus } from './lib/agents';
+import type { AgentRuntimeState } from './components/AgentFlowBoard';
+
+const PORTAL_KEY = 'rcc_portal';
 
 interface Paper {
   file_path: string;
@@ -12,7 +22,25 @@ interface Paper {
   created_at: number;
 }
 
+interface ActiveDeliberation {
+  status?: string;
+  paper_path?: string | null;
+  round_num?: number;
+  reviews?: any[];
+  error_message?: string;
+}
+
+function readPortalFlag(): boolean {
+  try {
+    return sessionStorage.getItem(PORTAL_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
+  const [portalOpen, setPortalOpen] = useState(readPortalFlag);
+  const [view, setView] = useState<AppView>('council');
   const [papers, setPapers] = useState<Paper[]>([]);
   const [selectedPaper, setSelectedPaper] = useState<string | null>(null);
   const [paperDetails, setPaperDetails] = useState<any>(null);
@@ -20,25 +48,158 @@ export default function App() {
   const [delibResult, setDelibResult] = useState<any>(null);
   const [appeals, setAppeals] = useState<any[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  
-  // Input form
-  const [paperPathInput, setPaperPathInput] = useState("");
-  const [activePaperId, setActivePaperId] = useState<string>("");
+  const [paperPathInput, setPaperPathInput] = useState('');
+  const [activePaperId, setActivePaperId] = useState('');
+  const [active, setActive] = useState<ActiveDeliberation>({ status: 'idle' });
+  const [apiDown, setApiDown] = useState(false);
+  const [researchError, setResearchError] = useState('');
+  const [researchStatus, setResearchStatus] = useState('');
+  const [starting, setStarting] = useState(false);
+  const prevStatus = useRef<string | undefined>(undefined);
 
-  // Connect to the WebSocket token stream hook
-  const { liveTokenBuffer, isApprovalRequired, currentRoundNum, systemAlerts, dismissAlert } = useDeliberationStream(activePaperId);
+  const { liveTokenBuffer, isApprovalRequired, currentRoundNum, systemAlerts, dismissAlert } =
+    useDeliberationStream(portalOpen ? activePaperId : '');
 
   useEffect(() => {
-    loadPapers();
+    const onPop = (e: PopStateEvent) => {
+      const inPortal = Boolean(e.state && (e.state as { rccPortal?: boolean }).rccPortal);
+      if (inPortal) {
+        try {
+          sessionStorage.setItem(PORTAL_KEY, '1');
+        } catch {
+          /* ignore */
+        }
+        setPortalOpen(true);
+      } else {
+        try {
+          sessionStorage.removeItem(PORTAL_KEY);
+        } catch {
+          /* ignore */
+        }
+        setActivePaperId('');
+        setPortalOpen(false);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  // Refresh while portal is open: mark current history entry so Forward/Back stay coherent.
+  useEffect(() => {
+    if (!portalOpen) return;
+    const st = window.history.state as { rccPortal?: boolean } | null;
+    if (!st?.rccPortal) {
+      window.history.replaceState({ rccPortal: true }, '');
+    }
+  }, [portalOpen]);
+
+  const enterPortal = (next?: AppView) => {
+    try {
+      sessionStorage.setItem(PORTAL_KEY, '1');
+    } catch {
+      /* ignore */
+    }
+    if (next) setView(next);
+    setPortalOpen(true);
+    const st = window.history.state as { rccPortal?: boolean } | null;
+    if (!st?.rccPortal) {
+      window.history.pushState({ rccPortal: true }, '');
+    }
+  };
+
+  const leavePortal = () => {
+    try {
+      sessionStorage.removeItem(PORTAL_KEY);
+    } catch {
+      /* ignore */
+    }
+    setActivePaperId('');
+    setPortalOpen(false);
+    const st = window.history.state as { rccPortal?: boolean } | null;
+    if (st?.rccPortal) {
+      window.history.back();
+    }
+  };
+
+  useEffect(() => {
+    if (!portalOpen) return;
+    loadPapers();
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/settings`);
+        setApiDown(!res.ok);
+      } catch {
+        setApiDown(true);
+      }
+    })();
+  }, [portalOpen]);
+
+  useEffect(() => {
+    if (!portalOpen) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/active_deliberation`);
+        if (!res.ok) {
+          if (!cancelled) setApiDown(true);
+          return;
+        }
+        const data = await res.json();
+        if (!cancelled) {
+          setApiDown(false);
+          setActive(data || { status: 'idle' });
+        }
+      } catch {
+        if (!cancelled) setApiDown(true);
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [portalOpen]);
+
+  useEffect(() => {
+    if (!portalOpen) return;
+    if (active?.paper_path && (active.status === 'deliberating' || active.status === 'waiting_for_approval')) {
+      setActivePaperId(active.paper_path);
+      if (!selectedPaper) {
+        selectPaper(active.paper_path);
+      }
+    }
+  }, [portalOpen, active?.paper_path, active?.status]);
+
+  useEffect(() => {
+    if (!portalOpen) return;
+    const status = active?.status;
+    const path = active?.paper_path;
+    if (prevStatus.current && prevStatus.current !== 'completed' && status === 'completed' && path) {
+      selectPaper(path);
+      loadPapers();
+      setResearchStatus('Deliberation completed — verdict refreshed.');
+    }
+    prevStatus.current = status;
+  }, [portalOpen, active?.status, active?.paper_path]);
+
+  useEffect(() => {
+    const done = systemAlerts.find((a) => a.type === 'deliberation_completed');
+    if (done?.paper_path) {
+      selectPaper(done.paper_path);
+      loadPapers();
+    }
+  }, [systemAlerts]);
 
   const loadPapers = async () => {
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/papers`);
-      const data = await res.json();
-      setPapers(data);
+      const res = await fetch(`${API_BASE}/api/papers`);
+      if (!res.ok) throw new Error('papers');
+      setPapers(await res.json());
+      setApiDown(false);
     } catch (e) {
-      console.error("Failed to load papers list", e);
+      console.error('Failed to load papers list', e);
+      setApiDown(true);
     }
   };
 
@@ -47,188 +208,240 @@ export default function App() {
     const ep = encodeURIComponent(path);
     try {
       const [detailsRes, reviewsRes, delibRes, appealsRes] = await Promise.all([
-        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/paper?path=${ep}`),
-        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/reviews?path=${ep}`),
-        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/deliberation?path=${ep}`),
-        fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/appeals?path=${ep}`).catch(() => ({ json: async () => [] }))
+        fetch(`${API_BASE}/api/paper?path=${ep}`),
+        fetch(`${API_BASE}/api/reviews?path=${ep}`),
+        fetch(`${API_BASE}/api/deliberation?path=${ep}`),
+        fetch(`${API_BASE}/api/appeals?path=${ep}`).catch(() => ({ json: async () => [] }) as Response),
       ]);
-      setPaperDetails(await detailsRes.json());
-      setReviews(await reviewsRes.json());
-      setDelibResult(await delibRes.json());
-      setAppeals(await appealsRes.json());
+      setPaperDetails(detailsRes.ok ? await detailsRes.json() : null);
+      setReviews(reviewsRes.ok ? await reviewsRes.json() : null);
+      setDelibResult(delibRes.ok ? await delibRes.json() : null);
+      setAppeals(appealsRes.ok ? await appealsRes.json() : []);
     } catch (e) {
-      console.error("Failed to retrieve paper details", e);
+      console.error('Failed to retrieve paper details', e);
     }
   };
 
   const refreshAppeals = async () => {
-    if (selectedPaper) {
-      const ep = encodeURIComponent(selectedPaper);
-      try {
-        const [delibRes, appealsRes] = await Promise.all([
-          fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/deliberation?path=${ep}`),
-          fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/appeals?path=${ep}`)
-        ]);
-        setDelibResult(await delibRes.json());
-        setAppeals(await appealsRes.json());
-      } catch (e) {
-        console.error("Failed to refresh appeals", e);
-      }
+    if (!selectedPaper) return;
+    const ep = encodeURIComponent(selectedPaper);
+    try {
+      const [delibRes, appealsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/deliberation?path=${ep}`),
+        fetch(`${API_BASE}/api/appeals?path=${ep}`),
+      ]);
+      setDelibResult(await delibRes.json());
+      setAppeals(await appealsRes.json());
+    } catch (e) {
+      console.error('Failed to refresh appeals', e);
     }
   };
 
   const startDeliberation = async () => {
-    if (!paperPathInput.trim()) return alert("Enter a path.");
+    setResearchError('');
+    setResearchStatus('');
+    if (!paperPathInput.trim()) {
+      setResearchError('Enter a manuscript path (or pick a fixture).');
+      return;
+    }
+    setStarting(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/deliberate?path=${encodeURIComponent(paperPathInput)}`, {
-        method: "POST"
-      });
-      const data = await res.json();
-      if (data.error) {
-        alert("Error: " + data.error);
+      const res = await fetch(
+        `${API_BASE}/api/deliberate?path=${encodeURIComponent(paperPathInput)}`,
+        { method: 'POST' },
+      );
+      const data = await res.json().catch(() => ({}));
+      const detail =
+        typeof data.detail === 'string'
+          ? data.detail
+          : Array.isArray(data.detail)
+            ? data.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+            : data.error || '';
+      if (!res.ok || data.error) {
+        setResearchError(detail || `Request failed (${res.status})`);
+        setApiDown(res.status >= 500);
       } else {
-        setActivePaperId(paperPathInput);
+        const path = paperPathInput.trim();
+        setActivePaperId(path);
+        await selectPaper(path);
+        setView('council');
+        setResearchStatus('Deliberation started — watching Council.');
+        loadPapers();
       }
-    } catch (e) {
-      alert("Failed to start deliberation.");
+    } catch {
+      setResearchError('Failed to reach API. Is the server on 8090?');
+      setApiDown(true);
+    } finally {
+      setStarting(false);
     }
   };
 
   const approveRound = async () => {
     try {
-      await fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/approve_round`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/approve_round`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setResearchStatus('');
+        setResearchError(body.error || body.detail || `Approve failed (${res.status})`);
+      } else {
+        setResearchError('');
+        setResearchStatus(`Round ${currentRoundNum} approved — continuing deliberation.`);
+      }
     } catch (e) {
-      console.error("Failed to approve round", e);
+      console.error('Failed to approve round', e);
+      setResearchError('Failed to reach API to approve round.');
     }
   };
 
   const abortDeliberation = async () => {
     try {
-      await fetch(`${import.meta.env.VITE_API_REST_URL || 'http://localhost:8080'}/api/abort_round`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/abort_round`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setResearchError(body.error || body.detail || `Abort failed (${res.status})`);
+      } else {
+        setResearchError('');
+        setResearchStatus('Deliberation abort requested.');
+      }
     } catch (e) {
-      console.error("Failed to abort deliberation", e);
+      console.error('Failed to abort deliberation', e);
+      setResearchError('Failed to reach API to abort.');
     }
   };
 
+  const agentStates: AgentRuntimeState[] = useMemo(() => {
+    const liveReviews: any[] = active?.reviews || [];
+    const rounds = reviews?.rounds || {};
+    const roundKeys = Object.keys(rounds).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    const latestRound = roundKeys.length ? rounds[roundKeys[roundKeys.length - 1]] : [];
+    const archived: any[] = Array.isArray(latestRound) ? latestRound : [];
+    const live = active?.status === 'deliberating' || active?.status === 'waiting_for_approval';
+
+    return COUNCIL_AGENTS.map((agent) => {
+      const fromLive = liveReviews.find((r) => r.agent_name === agent.name || r.agent === agent.name);
+      const fromArch = archived.find((r) => r.agent_name === agent.name || r.agent === agent.name);
+      const hit = fromLive || fromArch;
+      let status: AgentStatus = 'awaiting';
+      if (hit) status = 'done';
+      else if (live && liveTokenBuffer) status = 'reviewing';
+      if (live && hit?.challenge_target) status = 'active';
+      else if (live && !hit && liveTokenBuffer && agent.name === 'Skeptical Reviewer') status = 'active';
+      return {
+        name: agent.name,
+        status,
+        challenge: hit?.challenge_target || null,
+        score: hit?.score ?? null,
+        justification: hit?.justification || null,
+      };
+    });
+  }, [active, reviews, liveTokenBuffer]);
+
+  const metrics = useMemo(() => {
+    const parsed =
+      typeof delibResult?.report_json === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(delibResult.report_json);
+            } catch {
+              return {};
+            }
+          })()
+        : delibResult?.report_json || {};
+    const individuals: any[] = parsed?.individual_reviews || [];
+    const score = delibResult?.aggregate_score || 0;
+    const agentsAligned = individuals.filter((r) => Math.abs((r.score || 0) - score) <= 0.75).length;
+    const criticalFlags = individuals.filter((r) => (r.score || 5) < 2.5 || r.challenge_target).length;
+    const challenger =
+      individuals.find((r) => r.challenge_target) ||
+      agentStates.find((a) => a.challenge || (a.justification && a.status === 'active'));
+    const quote =
+      challenger?.justification ||
+      parsed?.executive_summary?.major_concerns?.[0] ||
+      null;
+    const quoteAgent = challenger?.agent || challenger?.agent_name || challenger?.name || null;
+    return { agentsAligned, criticalFlags, quote, quoteAgent };
+  }, [delibResult, agentStates]);
+
+  const sessionLabel = 'RCC Lab';
+  const sessionSub = active?.paper_path
+    ? `Active: ${paperBasename(active.paper_path)} · ${active.status || 'idle'}`
+    : 'No active session';
+
+  if (!portalOpen) {
+    return <LandingView onEnterPortal={enterPortal} />;
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0d0f1a', color: '#e4e8f1', fontFamily: 'system-ui' }}>
-      <header style={{ background: 'linear-gradient(135deg, #1a1d35, #0d0f1a)', borderBottom: '1px solid #2b3050', padding: '14px 24px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-        <span style={{ fontSize: '1.25rem' }}>⚖️</span>
-        <h1 style={{ fontSize: '1.05rem', fontWeight: 600 }}>Research Consensus Council Dashboard</h1>
-        <span style={{ background: '#7c6ff7', color: '#fff', borderRadius: '20px', padding: '2px 9px', fontSize: '0.68rem', fontWeight: 700 }}>REACT Client</span>
-
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <NotificationBell alerts={systemAlerts} />
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            style={{
-              background: '#1e2235', border: '1px solid #2b3050', borderRadius: '20px',
-              padding: '6px 14px', color: '#e4e8f1', fontSize: '0.8rem', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px'
+    <>
+      <AppShell
+        view={view}
+        onNavigate={setView}
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onNewExperiment={() => setView('research')}
+        onLeavePortal={leavePortal}
+        sessionLabel={sessionLabel}
+        sessionSub={sessionSub}
+        apiDown={apiDown}
+        apiBase={API_BASE}
+        notificationSlot={<NotificationBell alerts={systemAlerts} />}
+      >
+        {view === 'council' && (
+          <CouncilView
+            activeStatus={active?.status || 'idle'}
+            activePath={active?.paper_path || null}
+            activeRound={active?.round_num || currentRoundNum}
+            activeError={active?.error_message || ''}
+            paperDetails={paperDetails}
+            reviews={reviews}
+            delibResult={delibResult}
+            appeals={appeals}
+            agentStates={agentStates}
+            liveTokenBuffer={liveTokenBuffer}
+            isApprovalRequired={isApprovalRequired}
+            currentRoundNum={currentRoundNum}
+            onApprove={approveRound}
+            onAbort={abortDeliberation}
+            onRefreshAppeals={refreshAppeals}
+            onStartResearch={() => setView('research')}
+            selectedPaper={selectedPaper}
+            hitlError={researchError}
+            metrics={metrics}
+          />
+        )}
+        {view === 'research' && (
+          <ResearchView
+            paperPathInput={paperPathInput}
+            onPathChange={(v) => {
+              setPaperPathInput(v);
+              setResearchError('');
             }}
-            data-testid="settings-btn"
-          >
-            <span>⚙️</span>
-            <span>Settings</span>
-          </button>
-        </div>
-      </header>
-
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left Sidebar: Processed Papers */}
-        <aside style={{ width: '265px', background: '#151826', borderRight: '1px solid #2b3050', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '13px', borderBottom: '1px solid #2b3050' }}>
-            <h2 style={{ fontSize: '0.69rem', textTransform: 'uppercase', letterSpacing: '0.11em', color: '#7a86a1', marginBottom: '8px' }}>Processed Papers</h2>
-          </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '6px' }}>
-            {papers.map((p) => (
-              <div 
-                key={p.file_path}
-                onClick={() => selectPaper(p.file_path)}
-                style={{
-                  padding: '9px 11px',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                  marginBottom: '3px',
-                  background: selectedPaper === p.file_path ? '#1e2235' : 'transparent',
-                  border: selectedPaper === p.file_path ? '1px solid #7c6ff7' : '1px solid transparent'
-                }}
-              >
-                <div style={{ fontSize: '0.81rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {p.file_path.split('/').pop()}
-                </div>
-                <div style={{ fontSize: '0.69rem', color: '#7a86a1', marginTop: '2px' }}>
-                  {new Date(p.created_at * 1000).toLocaleDateString()}
-                </div>
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        {/* Main Content Area */}
-        <main style={{ flex: 1, overflowY: 'auto', padding: '22px 26px', background: '#0d0f1a' }}>
-          
-          {/* Active Deliberation / WebSocket Token Stream Panel */}
-          {activePaperId && (
-            <div className="hitl-panel" style={{ marginBottom: '20px', border: '1px solid #7c6ff7' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <h3 style={{ fontSize: '0.9rem', color: '#7c6ff7', textTransform: 'uppercase', fontWeight: 700 }}>Active Deliberation: {activePaperId.split('/').pop()}</h3>
-                <span style={{ fontSize: '0.75rem', padding: '3px 9px', borderRadius: '12px', background: isApprovalRequired ? 'rgba(124,111,247,0.15)' : 'rgba(245,158,11,0.15)', color: isApprovalRequired ? '#7c6ff7' : '#f59e0b' }}>
-                  {isApprovalRequired ? "Human Sign-off Required" : "Engine Processing..."}
-                </span>
-              </div>
-              
-              {/* Token Buffer Stream */}
-              <TokenStream tokenBuffer={liveTokenBuffer} />
-
-              {/* Action Pause sign-off controls */}
-              <ApprovalControls
-                isApprovalRequired={isApprovalRequired}
-                roundNum={currentRoundNum}
-                onApprove={approveRound}
-                onAbort={abortDeliberation}
-              />
-            </div>
-          )}
-
-          {/* Trigger Form */}
-          <div style={{ background: '#151826', border: '1px solid #2b3050', borderRadius: '10px', padding: '14px', marginBottom: '20px' }}>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <input 
-                type="text" 
-                placeholder="Enter path to paper (e.g. tests/fixtures/test_paper.txt)" 
-                value={paperPathInput}
-                onChange={(e) => setPaperPathInput(e.target.value)}
-                style={{ flex: 1, background: '#1e2235', border: '1px solid #2b3050', borderRadius: '10px', padding: '8px 12px', color: '#e4e8f1', outline: 'none' }}
-              />
-              <button className="btn btn-primary" onClick={startDeliberation}>Start Deliberation</button>
-            </div>
-          </div>
-
-          {/* Selected Paper Details */}
-          {selectedPaper ? (
-            <div>
-              <DataPanel
-                aggregateScore={delibResult?.aggregate_score || 0.00}
-                verdict={delibResult?.verdict || 'Processing'}
-                paperPath={selectedPaper}
-                abstractText={paperDetails?.abstract}
-                reportJson={delibResult?.report_json}
-                reviews={reviews}
-                appeals={appeals}
-                onRefreshAppeals={refreshAppeals}
-              />
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '35vh', color: '#7a86a1', gap: '10px' }}>
-              <div style={{ fontSize: '2.80rem', opacity: 0.22 }}>📋</div>
-              <p>Select a paper to view its consensus results.</p>
-            </div>
-          )}
-        </main>
-      </div>
+            onStart={startDeliberation}
+            papers={papers}
+            errorMsg={researchError}
+            statusMsg={researchStatus}
+            starting={starting}
+          />
+        )}
+        {view === 'archive' && (
+          <ArchiveView
+            papers={papers}
+            selectedPaper={selectedPaper}
+            onSelect={(path) => {
+              selectPaper(path);
+            }}
+            paperDetails={paperDetails}
+            reviews={reviews}
+            delibResult={delibResult}
+            appeals={appeals}
+            onRefreshAppeals={refreshAppeals}
+          />
+        )}
+        {view === 'lab' && <LabView />}
+        {view === 'audit' && <AuditView />}
+        {view === 'docs' && <DocsView />}
+      </AppShell>
       <ToastNotification alerts={systemAlerts} onDismiss={dismissAlert} />
       <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
-    </div>
+    </>
   );
 }

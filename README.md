@@ -1,20 +1,33 @@
 # Research Consensus Council (RCC)
 
-Multi-agent deliberation consensus system with persistence, real LLM hooks, appeals processing, and web/dashboard visualisations.
+Multi-agent deliberation consensus system with persistence, real LLM hooks, appeals processing, skill-tree audit/review, and a React portal (landing + workspace).
+
+## Documentation
+
+- **[SETUP.md](SETUP.md)** — Install, ports (8090 local / 8080 Docker), frontend + portal UX
+- **[ADK.md](ADK.md)** — Agent Development Kit (agent catalog, skill tree, tools, orchestration, contracts, HITL)
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Stack, database schema, UI shell, deployment constraints
+- [AGENTS.md](AGENTS.md) — Agent personas, skills, and tool schemas
+- [PRD.md](PRD.md) — Product requirements and roadmap
 
 ## Setup & Ingestion
 
-1. Install dependencies:
+Full steps: **[SETUP.md](SETUP.md)**. Short version:
+
+1. `pip install -r requirements.txt` then copy `.env.example` → `.env`.
+2. Start API on **8090** locally (recommended on Windows):
    ```bash
-   pip install -r requirements.txt
+   python -c "import api; api.start_server('127.0.0.1', 8090)"
    ```
-2. Configure settings:
-   - System reads environment variables:
-     - `RCC_LLM_PROVIDER`: `stub` (default), `ollama`, or `openai`.
-     - `OLLAMA_HOST`: host URI (defaults to `http://localhost:11434`).
-     - `OPENAI_API_KEY`: API key for OpenAI GPT execution.
-     - `RCC_WEBHOOK_URL`: endpoint for receiving deliberation alerts.
-   - Alternatively, place a `council_config.json` in the root folder containing custom weights or mapping keys.
+   `python council.py --api` still defaults to **8080**.
+3. Frontend: `cd frontend && npm install && npm run dev` (defaults to API `http://127.0.0.1:8090`).
+
+Environment knobs (see `.env.example`):
+
+- `LLM_PROVIDER` / `FALLBACK_PROVIDER`: `stub` (default), `ollama`, or `openai`
+- `OLLAMA_HOST`, `OPENAI_API_KEY`, `WEBHOOK_URL`
+- `JINA_API_KEY`, `RETRIEVAL_BACKEND` (`chroma` | `jina` | `hybrid`)
+- Optional `council_config.json` for custom weights
 
 ## Usage
 
@@ -22,23 +35,43 @@ Multi-agent deliberation consensus system with persistence, real LLM hooks, appe
   ```bash
   python council.py <paper.pdf>
   ```
+- **Review skill tree only (claim grounding, citations, coherence):**
+  ```bash
+  python council.py --review <paper.pdf>
+  ```
 - **Submit Appeal:**
   ```bash
   python council.py --appeal <paper.pdf> "rebuttal text here"
   ```
-- **Run Quality Audit:**
+- **Run Quality Audit (monthly drift + audit skill tree):**
   ```bash
   python council.py --audit
   ```
+- **Stress suite (stub API load + limits + hallucination + engine batch):**
+  ```bash
+  python tests/stress_test.py --base-url http://127.0.0.1:8090 --start-server
+  ```
+  Use port **8090** if 8080 is taken (e.g. Oracle TNSLSNR on Windows).
 - **Review Paper Deliberation History:**
   ```bash
   python council.py --history <paper.pdf>
   ```
-- **Start HTTP API Server & Live Dashboard:**
+- **Start HTTP API Server:**
   ```bash
   python council.py --api
   ```
-  Once running, view the dashboard at `http://127.0.0.1:8080/`.
+  Default bind: `http://127.0.0.1:8080/`. For local UI pairing, prefer **8090** (see [SETUP.md](SETUP.md)).
+
+### Portal (React)
+
+1. Open the Vite app → **landing page**.
+2. **Access Portal** / **Start Validation** → workspace (`AppShell`).
+3. **SideNav** switches Research / Council / Archive / Audit / Lab / Docs; **TopNav** is brand + notifications + Settings only.
+4. Browser **Back** or **Leave portal** returns to the landing page.
+
+### Jenni.ai note
+
+Jenni has no public developer API. RCC mirrors claim-confidence review locally (`skills/review/claim_grounding.py`). You may manually import a saved `*.report.json` into Jenni’s Library for human verification.
 
 ## REST API Endpoints
 
@@ -46,8 +79,16 @@ Multi-agent deliberation consensus system with persistence, real LLM hooks, appe
 - `GET /api/reviews?path=<path>`: Returns all 3 rounds of review history for a paper.
 - `GET /api/deliberation?path=<path>`: Returns final verdict, aggregate scores, and parsed report.
 - `GET /api/settings`: Read current server configurations.
-- POST `/api/settings`: Modify criterion weights live (JSON: `{"weights": {...}}`). Weights must sum to 1.0.
-- `GET /api/audit`: Returns monthly quality control statistics.
+- `POST /api/settings`: Modify criterion weights live (JSON: `{"weights": {...}}`). Weights must sum to 1.0.
+- `POST /api/upload`: Upload a manuscript file; returns a server path for deliberation.
+- `POST /api/deliberate?path=<path>`: Start deliberation (path must be a file, not a directory).
+- `POST /api/approve_round` / `POST /api/abort_round`: HITL gates.
+- `GET /api/audit`: Monthly drift + audit skill tree.
+- `POST /api/skills/review?path=<path>`: Run review skill tree on a manuscript.
+- `POST /api/skills/claim_grounding?path=<path>`: Jenni-style claim grounding (optional `claim_text`).
+- `GET /api/skills/tools`: Registered agent-kit tool schemas.
+- `GET /api/skills/audit?path=<path>`: Run audit skill tree (optional paper path for consistency checks).
+- `WS /api/ws/{paper_id}`: Live deliberation events.
 
 ## Data Connections & Volume Persistence
 

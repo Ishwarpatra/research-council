@@ -1,11 +1,12 @@
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -25,6 +26,9 @@ active_deliberation = {
 }
 approval_event = asyncio.Event()
 abort_flag = asyncio.Event()
+
+# Main ASGI loop — set in lifespan; HITL runs on a worker thread and must bridge here
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 # Active WebSocket connections list
 connected_clients = set()
@@ -55,18 +59,21 @@ async def broadcast_ws(payload: dict, app_db):
             connected_clients.discard(ws)
 
 def hitl_callback(round_num: int, reviews: list) -> bool:
-    """Callback function blocking deliberation loop to await human approval."""
-    # Since council runs in a separate thread, bridge the blocking check using asyncio.run_coroutine_threadsafe
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return asyncio.run_coroutine_threadsafe(
+    """Block the deliberation worker thread until the ASGI loop completes HITL approval."""
+    if _main_loop is None or not _main_loop.is_running():
+        raise RuntimeError(
+            "HITL callback requires a running API event loop. "
+            "Start the server with `python council.py --api`."
+        )
+    future = asyncio.run_coroutine_threadsafe(
         async_hitl_callback(round_num, reviews),
-        loop
-    ).result()
+        _main_loop,
+    )
+    try:
+        return future.result()
+    except Exception:
+        future.cancel()
+        raise
 
 async def async_hitl_callback(round_num: int, reviews: list) -> bool:
     global active_deliberation
@@ -165,7 +172,7 @@ async def background_deliberation_task(paper_path: str, app_db):
             }, app_db)
         else:
             active_deliberation["status"] = "failed"
-            active_deliberation["error_message"] = str(exc)
+            active_deliberation["error_message"] = f"{type(exc).__name__}: {exc}"
             logger.error(f"Deliberation failed: {exc}", exc_info=True)
             await broadcast_ws({
                 "type": "deliberation_failed",
@@ -179,7 +186,9 @@ async def background_deliberation_task(paper_path: str, app_db):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _main_loop
     # --- STARTUP PHASE ---
+    _main_loop = asyncio.get_running_loop()
     logger.info("Initializing persistent aiosqlite database connection...")
     try:
         # Initialize schema and get persistent database handle
@@ -200,15 +209,21 @@ async def lifespan(app: FastAPI):
         logger.info("Registered circuit breaker listener.")
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
-        raise e
+        _main_loop = None
+        raise
 
-    yield  # Application runs while suspended here
-
-    # --- SHUTDOWN PHASE ---
-    logger.info("Closing persistent database connection...")
-    if hasattr(app.state, "db"):
-        await app.state.db.close()
-        logger.info("Database connection safely closed.")
+    try:
+        yield  # Application runs while suspended here
+    finally:
+        # --- SHUTDOWN PHASE ---
+        logger.info("Closing persistent database connection...")
+        _main_loop = None
+        if hasattr(app.state, "db") and app.state.db is not None:
+            try:
+                await app.state.db.close()
+                logger.info("Database connection safely closed.")
+            except Exception as close_err:
+                logger.error(f"Error closing database connection: {close_err}")
 
 app = FastAPI(
     title="Research Consensus Council API",
@@ -230,6 +245,15 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error"},
     )
 
 
@@ -558,12 +582,14 @@ async def get_paper_detail(path: str):
     p = db.load_paper(unquote(path))
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
+    def _clip(value, n=600):
+        return (value or "")[:n]
     return {
         "file_path": p["file_path"],
-        "abstract":  p["abstract"][:600],
-        "methods":   p["methods"][:600],
-        "results":   p["results"][:600],
-        "claims":    p["claims"][:600],
+        "abstract":  _clip(p.get("abstract")),
+        "methods":   _clip(p.get("methods")),
+        "results":   _clip(p.get("results")),
+        "claims":    _clip(p.get("claims")),
     }
 
 @app.get("/api/reviews")
@@ -597,8 +623,8 @@ async def get_deliberation(path: str):
     if isinstance(delib_dict.get("report_json"), str):
         try:
             delib_dict["report_json"] = json.loads(delib_dict["report_json"])
-        except Exception:
-            pass
+        except json.JSONDecodeError:
+            logger.warning("Corrupt report_json for paper_id=%s; returning raw string", pid)
     return delib_dict
 
 @app.get("/api/settings")
@@ -653,21 +679,73 @@ async def post_settings(request: Request):
 
 @app.get("/api/audit")
 async def get_audit():
-    return council.run_monthly_audit()
+    """Legacy monthly drift plus full audit skill tree."""
+    from skills import run_skill_tree
+    return {
+        "monthly": council.run_monthly_audit(),
+        "skill_tree": run_skill_tree("audit", context={"reviews": []}),
+    }
 
 @app.get("/api/active_deliberation")
 async def get_active_deliberation():
     return active_deliberation
 
+_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_UPLOAD_SUFFIXES = {".pdf", ".txt", ".md"}
+
+
+@app.post("/api/upload")
+async def upload_manuscript(file: UploadFile = File(...)):
+    """Persist an uploaded manuscript under uploads/ and return a path for /api/deliberate."""
+    name = Path(file.filename or "").name
+    if not name:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    suffix = Path(name).suffix.lower()
+    if suffix not in _UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix or '(none)'}'. Allowed: .pdf, .txt, .md",
+        )
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(raw) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File exceeds 25 MB limit.")
+
+    uploads = Path(__file__).resolve().parent / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    # Avoid collisions: keep basename, prefix with unix timestamp
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    dest = uploads / f"{int(time.time())}_{safe}"
+    dest.write_bytes(raw)
+    return {"paper_path": str(dest), "filename": name, "bytes": len(raw)}
+
+
 @app.post("/api/deliberate")
 async def trigger_deliberation(path: str, background_tasks: BackgroundTasks):
     global active_deliberation
     decoded_path = unquote(path)
+    p = Path(decoded_path)
     if active_deliberation["status"] in ("deliberating", "waiting_for_approval"):
         raise HTTPException(status_code=400, detail="Another deliberation is already in progress.")
 
-    if not Path(decoded_path).exists():
+    if not p.exists():
         raise HTTPException(status_code=404, detail=f"Manuscript file not found: {decoded_path}")
+
+    if p.is_dir():
+        kids = [c.name for c in p.iterdir() if c.is_file() and c.suffix.lower() in {".pdf", ".txt", ".md"}][:8]
+        hint = f" Found manuscripts: {', '.join(kids)}." if kids else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Path is a folder, not a manuscript file: {decoded_path}."
+                f" Point Research at a single .pdf or .txt file.{hint}"
+            ),
+        )
+
+    if not p.is_file():
+        raise HTTPException(status_code=400, detail=f"Path is not a readable manuscript file: {decoded_path}")
 
     app_db = app.state.db if hasattr(app, "state") and hasattr(app.state, "db") else None
     background_tasks.add_task(background_deliberation_task, decoded_path, app_db)
@@ -694,6 +772,8 @@ async def abort_round():
 @app.post("/api/appeal")
 async def submit_appeal(path: str, rebuttal: str):
     decoded_path = unquote(path)
+    if not rebuttal or not str(rebuttal).strip():
+        raise HTTPException(status_code=400, detail="Rebuttal text is required.")
     paper_id = db.get_paper_id_by_path(decoded_path)
     if not paper_id:
         raise HTTPException(status_code=404, detail=f"Paper not found: {decoded_path}")
@@ -702,11 +782,22 @@ async def submit_appeal(path: str, rebuttal: str):
     try:
         report = await loop.run_in_executor(
             None,
-            lambda: council.submit_appeal(decoded_path, rebuttal)
+            lambda: council.submit_appeal(decoded_path, rebuttal.strip())
         )
-        return report
     except Exception as exc:
+        logger.exception("Appeal processing failed for %s", decoded_path)
         raise HTTPException(status_code=500, detail=f"Appeal processing failed: {exc}")
+
+    if isinstance(report, dict) and report.get("error"):
+        err = report["error"]
+        if "Rebuttal" in err:
+            status = 400
+        elif "failed" in err.lower():
+            status = 500
+        else:
+            status = 404
+        raise HTTPException(status_code=status, detail=err)
+    return report
 
 @app.get("/api/appeals")
 async def get_appeals(path: str):
@@ -718,12 +809,108 @@ async def get_appeals(path: str):
 
 @app.get("/api/prior_art")
 async def get_prior_art(query: str):
+    if not query or not query.strip():
+        raise HTTPException(status_code=400, detail="Query text is required.")
     try:
         from skills.prior_art_validator import PriorArtValidator
         validator = PriorArtValidator()
-        return validator.query_prior_art(query)
+        return validator.query_prior_art(query.strip())
     except Exception as exc:
+        logger.exception("Prior art query failed")
         raise HTTPException(status_code=500, detail=f"Prior art query failed: {exc}")
+
+
+@app.post("/api/skills/review")
+async def skills_review(path: str):
+    """Run the pre-council review skill tree on a manuscript path."""
+    decoded_path = unquote(path)
+    if not Path(decoded_path).exists():
+        raise HTTPException(status_code=404, detail=f"Manuscript file not found: {decoded_path}")
+    loop = asyncio.get_running_loop()
+    try:
+        def _run():
+            paper = council.extract_content(decoded_path)
+            from skills import run_skill_tree
+            return run_skill_tree("review", paper=paper)
+
+        return await loop.run_in_executor(None, _run)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Review skill tree failed")
+        raise HTTPException(status_code=500, detail=f"Review skill tree failed: {exc}")
+
+
+@app.post("/api/skills/claim_grounding")
+async def skills_claim_grounding(path: str, claim_text: str | None = None):
+    """Jenni-style claim grounding for a manuscript (agent-kit tool)."""
+    decoded_path = unquote(path)
+    if not Path(decoded_path).exists():
+        raise HTTPException(status_code=404, detail=f"Manuscript file not found: {decoded_path}")
+    loop = asyncio.get_running_loop()
+    try:
+        def _run():
+            paper = council.extract_content(decoded_path)
+            from skills.agent_tools import dispatch_tool
+            args = {}
+            if claim_text and claim_text.strip():
+                args["claim_text"] = claim_text.strip()
+            return dispatch_tool("query_claim_grounding", args, paper=paper)
+
+        return await loop.run_in_executor(None, _run)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Claim grounding failed")
+        raise HTTPException(status_code=500, detail=f"Claim grounding failed: {exc}")
+
+
+@app.get("/api/skills/tools")
+async def list_agent_tools():
+    """List registered agent-kit tool schemas (OpenAI function format)."""
+    from skills.agent_tools import TOOL_SCHEMAS, list_tool_names
+    return {"tools": list_tool_names(), "schemas": TOOL_SCHEMAS}
+
+
+@app.get("/api/skills/audit")
+async def skills_audit(path: str | None = None):
+    """Run audit skill tree; optional path loads that paper's reviews for consistency checks."""
+    reviews = []
+    paper = None
+    query_text = ""
+    if path:
+        decoded = unquote(path)
+        pid = db.get_paper_id_by_path(decoded)
+        if not pid:
+            raise HTTPException(status_code=404, detail=f"Paper not found: {decoded}")
+        reviews = db.get_paper_reviews(pid)
+        loaded = db.load_paper(decoded)
+        if loaded:
+            query_text = loaded.get("claims") or loaded.get("abstract") or ""
+            paper = council.PaperContent(
+                file_path=loaded.get("file_path", decoded),
+                content_hash=loaded.get("content_hash", ""),
+                abstract=loaded.get("abstract") or "",
+                methods=loaded.get("methods") or "",
+                results=loaded.get("results") or "",
+                claims=loaded.get("claims") or "",
+                full_text=loaded.get("full_text") or "",
+            )
+    try:
+        from skills import run_skill_tree
+        tree = run_skill_tree(
+            "audit",
+            paper=paper,
+            context={"reviews": reviews, "query_text": query_text},
+        )
+        return {"monthly": council.run_monthly_audit(), "skill_tree": tree}
+    except Exception as exc:
+        logger.exception("Audit skill tree failed")
+        raise HTTPException(status_code=500, detail=f"Audit skill tree failed: {exc}")
 
 
 # ──────────────────────────────────────────────
@@ -791,6 +978,29 @@ if frontend_dist.exists():
 # ──────────────────────────────────────────────
 
 def start_server(host: str = "127.0.0.1", port: int = 8080):
+    import socket
+    import urllib.request
     import uvicorn
+
+    # If a healthy RCC already owns the port, skip re-bind (avoids WinError 10048 / exit 3).
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        in_use = s.connect_ex((host, port)) == 0
+        s.close()
+        if in_use:
+            with urllib.request.urlopen(f"http://{host}:{port}/api/skills/tools", timeout=2) as r:
+                body = r.read(180).decode("utf-8", errors="replace")
+            if "query_claim_grounding" in body:
+                msg = f"RCC API already running on http://{host}:{port}/ — skipping bind."
+                logger.info(msg)
+                print(msg)
+                return
+            raise OSError(10048, f"Port {port} is in use by a non-RCC process on {host}")
+    except OSError:
+        raise
+    except Exception:
+        pass
+
     logger.info(f"Starting async FastAPI Microservice on http://{host}:{port}/")
     uvicorn.run(app, host=host, port=port, log_level="info")

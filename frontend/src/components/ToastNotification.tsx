@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 
 export interface AlertData {
   seq_id: number;
@@ -25,7 +25,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ alerts, on
         background: 'rgba(34, 197, 94, 0.18)',
         border: '1px solid #22c55e',
         color: '#86efac',
-        title: alert.type === 'deliberation_completed' ? '✅ Deliberation Completed' : `👍 Round ${alert.round_num || ''} Approved`,
+        title: alert.type === 'deliberation_completed' ? 'Deliberation Completed' : `Round ${alert.round_num || ''} Approved`,
         msg: alert.report ? `Verdict: ${alert.report.executive_summary?.verdict}` : `Round ${alert.round_num || ''} approved by reviewer.`
       };
     }
@@ -34,7 +34,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ alerts, on
         background: 'rgba(239, 68, 68, 0.18)',
         border: '1px solid #ef4444',
         color: '#fca5a5',
-        title: '❌ Deliberation Failed',
+        title: 'Deliberation Failed',
         msg: alert.error || 'An error occurred during deliberation.'
       };
     }
@@ -43,7 +43,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ alerts, on
         background: 'rgba(245, 158, 11, 0.18)',
         border: '1px solid #f59e0b',
         color: '#fde047',
-        title: '⚠️ Deliberation Aborted',
+        title: 'Deliberation Aborted',
         msg: 'Deliberation session was cancelled by user.'
       };
     }
@@ -55,7 +55,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ alerts, on
           background: 'rgba(239, 68, 68, 0.18)',
           border: '1px solid #ef4444',
           color: '#fca5a5',
-          title: `⚠️ Circuit Breaker: ${alert.state}`,
+          title: `Circuit Breaker: ${alert.state}`,
           msg: alert.message || ''
         };
       case 'Half-Open':
@@ -63,7 +63,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ alerts, on
           background: 'rgba(245, 158, 11, 0.18)',
           border: '1px solid #f59e0b',
           color: '#fde047',
-          title: `⚠️ Circuit Breaker: ${alert.state}`,
+          title: `Circuit Breaker: ${alert.state}`,
           msg: alert.message || ''
         };
       case 'Closed':
@@ -72,7 +72,7 @@ export const ToastNotification: React.FC<ToastNotificationProps> = ({ alerts, on
           background: 'rgba(34, 197, 94, 0.18)',
           border: '1px solid #22c55e',
           color: '#86efac',
-          title: `ℹ️ Circuit Breaker: ${alert.state || 'Normal'}`,
+          title: `Circuit Breaker: ${alert.state || 'Normal'}`,
           msg: alert.message || 'Circuit status operational.'
         };
     }
@@ -145,11 +145,11 @@ export const NotificationBell: React.FC<{ alerts: AlertData[] }> = ({ alerts }) 
       <button
         onClick={() => setIsOpen(!isOpen)}
         style={{
-          background: '#1e2235',
-          border: '1px solid #2b3050',
+          background: 'var(--surface-muted)',
+          border: '1px solid var(--border)',
           borderRadius: '20px',
           padding: '6px 12px',
-          color: '#e4e8f1',
+          color: 'var(--ink)',
           fontSize: '0.8rem',
           cursor: 'pointer',
           display: 'flex',
@@ -157,10 +157,9 @@ export const NotificationBell: React.FC<{ alerts: AlertData[] }> = ({ alerts }) 
           gap: '6px'
         }}
       >
-        <span>🔔</span>
         <span>Notifications</span>
         {unreadCount > 0 && (
-          <span style={{ background: '#7c6ff7', color: '#fff', borderRadius: '10px', padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700 }}>
+          <span style={{ background: 'var(--accent)', color: 'var(--navy-ink)', borderRadius: '10px', padding: '1px 6px', fontSize: '0.68rem', fontWeight: 700 }}>
             {unreadCount}
           </span>
         )}
@@ -169,19 +168,19 @@ export const NotificationBell: React.FC<{ alerts: AlertData[] }> = ({ alerts }) 
       {isOpen && (
         <div style={{
           position: 'absolute', right: 0, top: '40px', width: '320px',
-          background: '#151826', border: '1px solid #2b3050', borderRadius: '12px',
-          padding: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)', zIndex: 1000
+          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '12px',
+          padding: '12px', boxShadow: 'var(--sh)', zIndex: 1000
         }}>
-          <h4 style={{ fontSize: '0.8rem', color: '#7c6ff7', textTransform: 'uppercase', marginBottom: '8px', borderBottom: '1px solid #2b3050', paddingBottom: '6px' }}>
+          <h4 style={{ fontSize: '0.8rem', color: 'var(--accent)', textTransform: 'uppercase', marginBottom: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
             System Events History ({alerts.length})
           </h4>
           {alerts.length === 0 ? (
-            <div style={{ fontSize: '0.75rem', color: '#7a86a1' }}>No events recorded.</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>No events recorded.</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '250px', overflowY: 'auto' }}>
               {alerts.slice(-10).reverse().map((a, i) => (
-                <div key={i} style={{ background: '#1e2235', padding: '8px', borderRadius: '6px', fontSize: '0.72rem', color: '#7a86a1' }}>
-                  <div style={{ color: '#e4e8f1', fontWeight: 600 }}>{a.type || a.state || 'Event'}</div>
+                <div key={i} style={{ background: 'var(--surface-muted)', padding: '8px', borderRadius: '6px', fontSize: '0.72rem', color: 'var(--muted)' }}>
+                  <div style={{ color: 'var(--ink)', fontWeight: 600 }}>{a.type || a.state || 'Event'}</div>
                   <div>{a.message || a.error || (a.report ? `Verdict: ${a.report.executive_summary?.verdict}` : 'System notification')}</div>
                 </div>
               ))}

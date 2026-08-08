@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     llm_provider: str = Field("stub")
     openai_api_key: str = Field("")
@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     db_path: str = Field("council.db")
     chroma_db_path: str = Field("chroma_db")
     fallback_provider: str = Field("stub")
+    jina_api_key: str = Field("")
+    # chroma | jina | hybrid — hybrid uses Chroma store + Jina embed/rerank when key present
+    retrieval_backend: str = Field("hybrid")
 
 # Instantiate and validate configuration immediately at boot time
 settings = Settings()
