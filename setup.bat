@@ -1,4 +1,4 @@
 @echo off
 TITLE Research Consensus Council - Setup
-python setup.py
+python setup_wizard.py
 pause
