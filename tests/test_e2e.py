@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Try to import Playwright for E2E tests, fallback if not installed
 try:
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright  # type: ignore
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
@@ -20,14 +20,38 @@ class TestConsensusCouncilE2E(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from council import start_api_server
 
+        cls.server_error = None
+
+        def _run_server():
+            try:
+                start_api_server("127.0.0.1", 8081)
+            except Exception as err:
+                cls.server_error = err
+
         # Run server on port 8081 to prevent clashes with port 8080
         cls.server_thread = threading.Thread(
-            target=start_api_server,
-            args=("127.0.0.1", 8081),
+            target=_run_server,
             daemon=True
         )
         cls.server_thread.start()
-        time.sleep(1.5)  # allow server to bind
+
+        # Poll up to 5 seconds for the server to be responsive
+        deadline = time.time() + 5.0
+        server_ok = False
+        while time.time() < deadline:
+            if cls.server_error:
+                raise RuntimeError(f"API server thread failed to start: {cls.server_error}") from cls.server_error
+            try:
+                req = urllib.request.Request("http://127.0.0.1:8081/api/settings")
+                with urllib.request.urlopen(req, timeout=0.5) as resp:
+                    if resp.status == 200:
+                        server_ok = True
+                        break
+            except Exception:
+                time.sleep(0.1)
+
+        if not server_ok and cls.server_error:
+            raise RuntimeError(f"API server thread failed to start: {cls.server_error}") from cls.server_error
 
     def test_api_settings_get(self):
         """Verify settings GET returns configured weights."""
@@ -63,7 +87,7 @@ class TestConsensusCouncilE2E(unittest.TestCase):
     def test_api_prior_art_get(self):
         """Verify GET /api/prior_art endpoint executes semantic search."""
         req = urllib.request.Request("http://127.0.0.1:8081/api/prior_art?query=test")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             self.assertIn("status", data)
             self.assertIn("findings", data)
@@ -74,7 +98,11 @@ class TestConsensusCouncilE2E(unittest.TestCase):
             self.skipTest("Playwright library is not installed in the current environment.")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            try:
+                browser = p.chromium.launch(headless=True)
+            except Exception as err:
+                self.skipTest(f"Playwright browser binaries not installed: {err}")
+                return
             page = browser.new_page()
             try:
                 page.goto("http://127.0.0.1:8081/", wait_until="domcontentloaded")

@@ -694,32 +694,51 @@ _UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 _UPLOAD_SUFFIXES = {".pdf", ".txt", ".md"}
 
 
-@app.post("/api/upload")
-async def upload_manuscript(file: UploadFile = File(...)):
-    """Persist an uploaded manuscript under uploads/ and return a path for /api/deliberate."""
-    name = Path(file.filename or "").name
-    if not name:
-        raise HTTPException(status_code=400, detail="Filename is required.")
-    suffix = Path(name).suffix.lower()
-    if suffix not in _UPLOAD_SUFFIXES:
+try:
+    import python_multipart
+    _HAS_MULTIPART = True
+except ImportError:
+    try:
+        import multipart
+        _HAS_MULTIPART = True
+    except ImportError:
+        _HAS_MULTIPART = False
+
+if _HAS_MULTIPART:
+    @app.post("/api/upload")
+    async def upload_manuscript(file: UploadFile = File(...)):
+        """Persist an uploaded manuscript under uploads/ and return a path for /api/deliberate."""
+        name = Path(file.filename or "").name
+        if not name:
+            raise HTTPException(status_code=400, detail="Filename is required.")
+        suffix = Path(name).suffix.lower()
+        if suffix not in _UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{suffix or '(none)'}'. Allowed: .pdf, .txt, .md",
+            )
+
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        if len(raw) > _UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="File exceeds 25 MB limit.")
+
+        uploads = Path(__file__).resolve().parent / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        # Avoid collisions: keep basename, prefix with unix timestamp
+        safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+        dest = uploads / f"{int(time.time())}_{safe}"
+        dest.write_bytes(raw)
+        return {"paper_path": str(dest), "filename": name, "bytes": len(raw)}
+else:
+    @app.post("/api/upload")
+    async def upload_manuscript(request: Request):
+        """Fallback endpoint when python-multipart is not installed."""
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{suffix or '(none)'}'. Allowed: .pdf, .txt, .md",
+            status_code=501,
+            detail="Form data requires 'python-multipart' to be installed. Run: pip install python-multipart",
         )
-
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(raw) > _UPLOAD_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="File exceeds 25 MB limit.")
-
-    uploads = Path(__file__).resolve().parent / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
-    # Avoid collisions: keep basename, prefix with unix timestamp
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
-    dest = uploads / f"{int(time.time())}_{safe}"
-    dest.write_bytes(raw)
-    return {"paper_path": str(dest), "filename": name, "bytes": len(raw)}
 
 
 @app.post("/api/deliberate")
