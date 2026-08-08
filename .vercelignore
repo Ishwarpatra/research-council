@@ -10,5 +10,14 @@ node_modules
 frontend/node_modules
 build
 dist
+frontend/dist
 .pytest_cache
 .ruff_cache
+.claude
+.cursor
+.github
+*.zip
+*.tar.gz
+*.7z
+Function_Documentation.*
+research_council.egg-info
