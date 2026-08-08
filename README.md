@@ -3,8 +3,30 @@
 Multi-agent deliberation consensus system with persistence, real LLM hooks, appeals processing, skill-tree audit/review, and a React portal (landing + workspace).
 
 [WEBSITE LINK](https://research-council-mocha.vercel.app/#ethics)
+
+## Repository Organization
+
+The repository keeps runtime code, documentation, frontend code, tests, and design resources in separate areas:
+
+| Path | Purpose |
+|---|---|
+| `api.py`, `council.py`, `circuit.py`, `config.py`, `db.py` | Core Python runtime modules and API server entry points |
+| `api/` | Vercel serverless API entry point and deployment-specific dependencies |
+| `frontend/` | React + Vite portal, including source, tests, and public assets |
+| `skills/` | Runtime agent skills, retrieval, audit, and review implementations |
+| `tests/` | Python unit, end-to-end, stress tests, and paper fixtures |
+| `scripts/` | Validation, accessibility, token, design, and responsive-check utilities |
+| `docs/` | Project documentation; see [`docs/README.md`](docs/README.md) for the index |
+| `accessibility/`, `components/`, `content/`, `frameworks/`, `taste/`, `tokens/`, `workflows/` | Design-system knowledge, content guidance, reusable specifications, and workflow references |
+| `design-systems/` | Design-system library and crosswalk/interop references |
+| `.claude/`, `.cursor/` | Claude and Cursor project skills, rules, templates, and design tooling |
+| Root configuration files | Packaging, environment, Docker, Vercel, CI, and setup configuration |
+
+Generated files and local state such as `.env`, databases, uploads, `__pycache__/`, build output, and frontend dependencies are excluded by `.gitignore` and should not be committed.
+
 ## Documentation
 
+- **[Documentation index](docs/README.md)** — Directory guide and documentation map
 - **[docs/guides/SETUP.md](docs/guides/SETUP.md)** — Install, ports (8090 local / 8080 Docker), frontend + portal UX
 - **[docs/architecture/ADK.md](docs/architecture/ADK.md)** — Agent Development Kit (agent catalog, skill tree, tools, orchestration, contracts, HITL)
 - [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) — Stack, database schema, UI shell, deployment constraints
