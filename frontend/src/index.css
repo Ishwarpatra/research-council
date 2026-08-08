@@ -883,45 +883,56 @@ button, input, textarea {
 
 .landing-hero-orbit {
   position: relative;
-  min-height: 420px;
+  min-height: 480px;
   border-radius: 16px;
   border: 1px solid var(--l-faint);
   background: rgba(19, 19, 19, 0.45);
   backdrop-filter: blur(30px);
-  overflow: hidden;
   display: grid;
   place-items: center;
+  padding: 48px;
 }
 
 .landing-orbit-ring {
   position: absolute;
-  width: min(360px, 78%);
-  height: min(360px, 78%);
+  width: min(340px, 72%);
+  height: min(340px, 72%);
   border-radius: 50%;
   border: 1px dashed rgba(255, 255, 255, 0.12);
   animation: landingSpin 48s linear infinite;
 }
 
-.landing-orbit-card {
+/* Outer positioner: invisible pivot that orbits around center */
+.landing-orbit-pos {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 132px;
-  padding: 10px 12px;
+  width: 0;
+  height: 0;
+  /* initial rotation set via inline style */
+  animation: landingSpin 48s linear infinite;
+}
+
+/* Inner card: counter-rotates to stay upright */
+.landing-orbit-card {
+  position: absolute;
+  top: -190px;
+  left: 0;
+  transform: translate(-50%, -50%);
+  /* counter-rotation set via inline style */
+  animation: landingCounterSpin 48s linear infinite;
+  width: 148px;
+  padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(20, 20, 20, 0.9);
+  background: rgba(20, 20, 20, 0.92);
   border: 1px solid var(--accent, #60a5fa);
   box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 25%, transparent);
-  transform:
-    rotate(calc(var(--i) * 360deg / var(--n)))
-    translateY(-170px)
-    rotate(calc(var(--i) * -360deg / var(--n)));
-  animation: landingCounterSpin 48s linear infinite;
+  white-space: nowrap;
 }
 
 .landing-orbit-name {
   display: block;
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 600;
   color: #fff;
 }
@@ -929,22 +940,19 @@ button, input, textarea {
 .landing-orbit-crit {
   display: block;
   margin-top: 4px;
-  font-size: 0.62rem;
+  font-size: 0.66rem;
   color: var(--l-muted);
   line-height: 1.3;
 }
 
 @keyframes landingSpin {
-  to { transform: rotate(360deg); }
+  from { transform: rotate(var(--start-angle, 0deg)); }
+  to   { transform: rotate(calc(var(--start-angle, 0deg) + 360deg)); }
 }
 
 @keyframes landingCounterSpin {
-  to {
-    transform:
-      rotate(calc(var(--i) * 360deg / var(--n) + 360deg))
-      translateY(-170px)
-      rotate(calc(var(--i) * -360deg / var(--n) - 360deg));
-  }
+  from { transform: translate(-50%, -50%) rotate(var(--counter-angle, 0deg)); }
+  to   { transform: translate(-50%, -50%) rotate(calc(var(--counter-angle, 0deg) - 360deg)); }
 }
 
 .landing-paper-stub {
@@ -1143,6 +1151,7 @@ button, input, textarea {
 @media (prefers-reduced-motion: reduce) {
   .landing-fade,
   .landing-orbit-ring,
+  .landing-orbit-pos,
   .landing-orbit-card,
   .landing-paper-stub,
   .pulse-notification,
